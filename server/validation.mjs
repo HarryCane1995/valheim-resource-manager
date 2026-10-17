@@ -1,4 +1,5 @@
 import { ApiError } from './store.mjs';
+import { hostBedReport } from './host-bed.mjs';
 
 const fail = message => { throw new ApiError(400,message); };
 export function object(value,label='JSON') { if (!value || typeof value!=='object' || Array.isArray(value)) fail(`${label}: ожидается объект.`); return value; }
@@ -17,6 +18,7 @@ export function validateIngest(value) {
   string(value.worldName,'worldName',200);
   string(value.gameVersion,'gameVersion',120);
   if(!['client','host','server','snapshot'].includes(value.mode)) fail('mode: ожидается client, host, server или snapshot.');
+  try { hostBedReport(value); } catch (error) { fail(error.message); }
   if(!['partial','authoritative'].includes(value.coverage)) fail('coverage: ожидается partial или authoritative.');
   // A network role by itself does not prove all-world visibility. The collector
   // must opt in to an explicitly verified authoritative scan, never infer it.

@@ -1,0 +1,14 @@
+.host-bed-area{display:flex;align-items:flex-start;gap:11px;padding:13px 15px;margin:0 0 20px;border:1px solid #78684766;border-radius:6px;background:#9d7c3510;color:#b8aa8d;min-width:0}
+.host-bed-area-icon{display:flex;flex:none;padding-top:1px;color:#c2a76d}
+.host-bed-area-copy{min-width:0}
+.host-bed-area strong{display:block;font-size:11px;line-height:1.6;font-weight:550;color:#d6c297}
+.host-bed-area p{display:flex;flex-wrap:wrap;gap:3px 14px;margin:4px 0 0;font-size:10px;line-height:1.7;overflow-wrap:anywhere}
+.host-bed-area-center{color:#c8d7d1;font-variant-numeric:tabular-nums;white-space:nowrap}
+.host-bed-area-active{background:#6b9d8410;border-color:#72978655;color:#91aba0}
+.host-bed-area-active strong,.host-bed-area-active .host-bed-area-icon{color:#a6c8b5}
+.host-bed-area-demo{display:block;font-size:9px;color:#a2b2c1;margin-top:4px;line-height:1.5}
+.mode-compact .host-bed-area,.focus-mode .host-bed-area{padding:8px 11px;margin-bottom:12px;gap:8px}
+.mode-compact .host-bed-area strong,.focus-mode .host-bed-area strong{font-size:10px}
+.mode-compact .host-bed-area p,.focus-mode .host-bed-area p{font-size:9px;margin-top:2px;line-height:1.6}
+.host-bed-area-empty{min-height:220px}
+@media(max-width:650px){.host-bed-area{padding:10px;gap:8px}.host-bed-area p{display:block}.host-bed-area-center{display:block;white-space:normal}}

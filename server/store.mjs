@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { RUSSIAN_ITEM_NAMES } from './catalog.mjs';
 import { categoryFor, ItemRegistry } from './registry.mjs';
 import { summarizeClusters } from './clusters.mjs';
+import { hostBedReport, hostBedArea, withinHostBedArea } from './host-bed.mjs';
 export { categoryFor } from './registry.mjs';
 
 export const HEARTBEAT_TIMEOUT_MS = 12_000;
@@ -47,6 +48,7 @@ export class InventoryStore {
       CREATE TABLE IF NOT EXISTS zones (world_id TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL,x REAL NOT NULL,z REAL NOT NULL,radius REAL NOT NULL,enabled INTEGER NOT NULL, proposed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(world_id,id));
       CREATE TABLE IF NOT EXISTS minimums (world_id TEXT NOT NULL,prefab TEXT NOT NULL,minimum INTEGER NOT NULL, PRIMARY KEY(world_id,prefab));
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT,world_id TEXT NOT NULL,at INTEGER NOT NULL,text TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS host_beds (world_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,session_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('set','unset')),x REAL,y REAL,z REAL,observed_at INTEGER NOT NULL);
     `);
     const columns = new Set(this.db.prepare('PRAGMA table_info(containers)').all().map(column=>column.name));
     for (const [name,type] of [['runtime_id',"TEXT NOT NULL DEFAULT ''"],['identity_key',"TEXT NOT NULL DEFAULT ''"],['session_id',"TEXT NOT NULL DEFAULT ''"]]) if (!columns.has(name)) this.db.exec(`ALTER TABLE containers ADD COLUMN ${name} ${type}`);
@@ -70,6 +72,8 @@ export class InventoryStore {
   }
   ingest(payload) {
     const now = this.now();
+    let bedReport;
+    try { bedReport = hostBedReport(payload); } catch (error) { throw new ApiError(400, error.message); }
     return this.transact(() => {
       const digest=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
       const last = this.db.prepare('SELECT sequence,digest FROM sessions WHERE world_id=? AND source_id=? AND session_id=?').get(payload.worldId, payload.sourceId, payload.sessionId);
@@ -79,6 +83,7 @@ export class InventoryStore {
       this.db.prepare('INSERT INTO worlds(id,name) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name').run(payload.worldId, payload.worldName);
       this.db.prepare('INSERT INTO sessions(world_id,source_id,session_id,sequence,digest) VALUES(?,?,?,?,?) ON CONFLICT(world_id,source_id,session_id) DO UPDATE SET sequence=excluded.sequence,digest=excluded.digest').run(payload.worldId,payload.sourceId,payload.sessionId,payload.sequence,digest);
       this.db.prepare('INSERT INTO sources(world_id,id,session_id,mode,coverage,last_seen,game_version,force_offline) VALUES(?,?,?,?,?,?,?,0) ON CONFLICT(world_id,id) DO UPDATE SET session_id=excluded.session_id,mode=excluded.mode,coverage=excluded.coverage,last_seen=excluded.last_seen,game_version=excluded.game_version,force_offline=0').run(payload.worldId,payload.sourceId,payload.sessionId,payload.mode,payload.coverage,now,payload.gameVersion);
+      if (bedReport) this.db.prepare('INSERT INTO host_beds(world_id,source_id,session_id,status,x,y,z,observed_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(world_id) DO UPDATE SET source_id=excluded.source_id,session_id=excluded.session_id,status=excluded.status,x=excluded.x,y=excluded.y,z=excluded.z,observed_at=excluded.observed_at').run(payload.worldId,payload.sourceId,payload.sessionId,bedReport.status,bedReport.x ?? null,bedReport.y ?? null,bedReport.z ?? null,now);
       for (const container of payload.containers) {
         const internalId = container.identityKey ? `stable:${container.identityKey}` : container.id;
         const observed = Math.min(now, typeof container.observedAt === 'number' ? container.observedAt : Date.parse(container.observedAt));
@@ -125,7 +130,7 @@ export class InventoryStore {
     const worlds = this.db.prepare('SELECT id,name FROM worlds ORDER BY rowid').all();
     const selected = worldId ? worlds.find(world=>world.id===worldId) : worlds[0];
     if (worldId && !selected) throw new ApiError(404, 'Мир не найден.', 'WORLD_NOT_FOUND');
-    const empty = { demo:this.demo,worlds,world:selected || null,registry:{...this.registry.summary(),inventoryUnknownItems:0,reindexRequested:false},clusters:this.registry.clusters,clusterStats:summarizeClusters([],this.registry.clusters),reservationsImplemented:false,source:{connected:false,mode:null,coverage:'partial',scope:'UNKNOWN',lastSeenAt:null,lastConfirmedAt:null,gameVersion:null},containers:[],resources:[],zones:[],minimums:{},events:[],stats:{totalItems:0,uniqueItems:0,containers:0,shortages:0},revision:this.revision };
+    const empty = { demo:this.demo,worlds,world:selected || null,hostBedArea:hostBedArea(selected && this.db.prepare('SELECT * FROM host_beds WHERE world_id=?').get(selected.id)),registry:{...this.registry.summary(),inventoryUnknownItems:0,reindexRequested:false},clusters:this.registry.clusters,clusterStats:summarizeClusters([],this.registry.clusters),reservationsImplemented:false,source:{connected:false,mode:null,coverage:'partial',scope:'UNKNOWN',lastSeenAt:null,lastConfirmedAt:null,gameVersion:null},containers:[],resources:[],zones:[],minimums:{},events:[],stats:{totalItems:0,uniqueItems:0,containers:0,shortages:0},revision:this.revision };
     if (!selected) return empty;
     const now = this.now();
     const rawSources = this.db.prepare('SELECT * FROM sources WHERE world_id=? ORDER BY last_seen DESC').all(selected.id);
@@ -140,6 +145,7 @@ export class InventoryStore {
       const status = source?.mode==='snapshot' ? 'SNAPSHOT' : !connected(source) ? 'OFFLINE' : container.session_id!==source.session_id || now-container.observed_at>LIVE_OBSERVATION_MS ? 'STALE' : 'LIVE';
       return {id:container.id,zdoId:source?.mode==='snapshot'?null:container.runtime_id,identityKey:container.identity_key || null,type:container.type,name:container.name,label:container.label,x:container.x,y:container.y,z:container.z,items:normalizedItems(JSON.parse(container.items),this.registry),observedAt:iso(container.observed_at),status,zoneIds:zones.filter(zone=>zone.enabled && Math.hypot(container.x-zone.x,container.z-zone.z)<=zone.radius).map(zone=>zone.id)};
     });
+    containers = containers.filter(container => withinHostBedArea(container, empty.hostBedArea));
     if (zoneId !== 'all') containers = containers.filter(container=>container.zoneIds.includes(zoneId));
     const minimums=Object.create(null);for(const row of this.db.prepare('SELECT prefab,minimum FROM minimums WHERE world_id=?').all(selected.id)) {const prefab=this.registry.resolve(row.prefab)?.prefab || row.prefab;minimums[prefab]=Math.max(minimums[prefab] || 0,row.minimum);}
     const byPrefab = new Map();
@@ -154,11 +160,11 @@ export class InventoryStore {
       (resource.statusContainerIds[container.status] ||= []).push(container.id);
       if (statusRank[container.status]>statusRank[resource.status]) resource.status = container.status;
     }
-    for (const [prefab,minimum] of Object.entries(minimums)) if (!byPrefab.has(prefab) && minimum>0) byPrefab.set(prefab,{...this.registry.describe({prefab,name:RUSSIAN_ITEM_NAMES[prefab] || prefab}),quantity:0,variants:[],containerIds:[],minimum,status:preferred && connected(preferred) ? 'STALE' : 'OFFLINE'});
+    for (const [prefab,minimum] of Object.entries(minimums)) if (empty.hostBedArea.status !== 'unset' && !byPrefab.has(prefab) && minimum>0) byPrefab.set(prefab,{...this.registry.describe({prefab,name:RUSSIAN_ITEM_NAMES[prefab] || prefab}),quantity:0,variants:[],containerIds:[],minimum,status:preferred && connected(preferred) ? 'STALE' : 'OFFLINE'});
     const resources = [...byPrefab.values()].map(resource=>({...resource,searchText:[resource.searchText,...resource.sourceIds].join(' ').toLowerCase(),availableQuantity:resource.quantity,reservedQuantity:0,reservationsImplemented:false})).sort((a,b)=>b.quantity-a.quantity || a.name.localeCompare(b.name,'ru'));
     empty.registry.inventoryUnknownItems=resources.filter(resource=>!resource.registryKnown).length;
     empty.registry.reindexRequested=empty.registry.inventoryUnknownItems>0;
-    const lastConfirmed=this.db.prepare('SELECT MAX(observed_at) AS confirmed FROM containers WHERE world_id=? AND destroyed=0').get(selected.id).confirmed;
+    const lastConfirmed=containers.reduce((latest,container)=>latest===null?Date.parse(container.observedAt):Math.max(latest,Date.parse(container.observedAt)),null);
     return {...empty,clusterStats:summarizeClusters(resources,this.registry.clusters),source:preferred ? {connected:connected(preferred),mode:preferred.mode,coverage:preferred.coverage,scope:preferred.coverage==='authoritative' ? 'authoritative' : 'partial',lastSeenAt:iso(preferred.last_seen),lastConfirmedAt:lastConfirmed===null?null:iso(lastConfirmed),gameVersion:preferred.game_version} : empty.source,containers,resources,zones,minimums,events:this.db.prepare('SELECT id,at,text FROM events WHERE world_id=? ORDER BY id DESC LIMIT 60').all(selected.id).map(event=>({...event,at:iso(event.at)})),stats:{totalItems:resources.reduce((sum,resource)=>sum+resource.quantity,0),uniqueItems:resources.filter(resource=>resource.quantity>0).length,containers:containers.length,shortages:resources.filter(resource=>resource.quantity<resource.minimum).length}};
   }
   label(worldId,id,label) {
@@ -188,7 +194,7 @@ export class InventoryStore {
   }
   startDemo() {
     if (!this.demo) throw new Error('Demo is isolated from real inventory.');
-    this.db.exec('DELETE FROM worlds; DELETE FROM sources; DELETE FROM sessions; DELETE FROM containers; DELETE FROM zones; DELETE FROM minimums; DELETE FROM events;');
+    this.db.exec('DELETE FROM worlds; DELETE FROM sources; DELETE FROM sessions; DELETE FROM containers; DELETE FROM zones; DELETE FROM minimums; DELETE FROM events; DELETE FROM host_beds;');
     this.ingest({sourceId:'demo-fixture',worldId:'demo-midgard',worldName:'Мидгард · ДЕМО',mode:'client',coverage:'partial',sessionId:randomUUID(),sequence:0,gameVersion:'DEMO — синтетические данные',containers:[
       {id:'demo:main-chest',type:'piece_chest',name:'Деревянный сундук',x:120,y:12,z:-48,observedAt:this.now(),items:[{prefab:'Wood',name:'Древесина',quantity:160},{prefab:'Stone',name:'Камень',quantity:285},{prefab:'Resin',name:'Смола',quantity:36}]},
       {id:'demo:forge-chest',type:'piece_chest_private',name:'Укреплённый сундук',x:136,y:12,z:-42,observedAt:this.now(),items:[{prefab:'Wood',name:'Древесина',quantity:80},{prefab:'Iron',name:'Железо',quantity:42},{prefab:'Copper',name:'Медь',quantity:68},{prefab:'Coal',name:'Уголь',quantity:110}]},

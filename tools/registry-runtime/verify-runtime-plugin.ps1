@@ -35,8 +35,32 @@ try {
         'UnityEngine\.(?:Object::Instantiate|Sprite::OverrideGeometry|Texture::set_)',
         'System\.Reflection\.(?:FieldInfo|PropertyInfo)::SetValue'
     )
+    # Exact method names inspected in the installed Valheim 1.0.20 assembly.
+    # Even the native respawn resolver changes the profile/loading reference;
+    # the host-bed exporter must only read the saved custom spawn point.
+    $forbiddenHostBed = @(
+        'PlayerProfile::(?:SetCustomSpawnPoint|ClearCustomSpawnPoint)\(',
+        'Game::(?:FindSpawnPoint|RemoveCustomSpawnPoint|RequestRespawn|_RequestRespawn|SpawnPlayer)\(',
+        'ZNet::SetReferencePosition\(',
+        '(?:Player|Character)::TeleportTo\(',
+        'Bed::(?:SetOwner|Interact|RPC_SetOwner)\('
+    )
     $unsafe = @($calls | Where-Object { $candidate=$_.Target; @($forbidden | Where-Object { $candidate -match $_ }).Count -gt 0 })
     if ($unsafe.Count -gt 0 -or $mutations.Count -gt 0) { throw "Forbidden localization, prefab, reflection or game-field mutation found in compiled IL: $($unsafe.Target -join ', '); $($mutations -join ', ')" }
+    $unsafeHostBed = @($calls | Where-Object { $candidate=$_.Target; @($forbiddenHostBed | Where-Object { $candidate -match $_ }).Count -gt 0 })
+    if ($unsafeHostBed.Count -gt 0) { throw "Forbidden bed, respawn, loading-reference or teleport mutation found in compiled IL: $($unsafeHostBed.Target -join ', ')" }
+    $hostBedGetterCalls = @()
+    foreach ($required in @('Game::GetPlayerProfile(', 'PlayerProfile::HaveCustomSpawnPoint(', 'PlayerProfile::GetCustomSpawnPoint(')) {
+        $getterCalls = @($calls | Where-Object { $_.Target -match [regex]::Escape($required) })
+        if ($getterCalls.Count -ne 1 -or @($getterCalls | Where-Object { $_.Owner -ne 'System.Object ValheimResourceManager.Plugin::ReadHostBed()' }).Count -gt 0) {
+            throw "Expected exactly one host-profile getter call inside ReadHostBed: $required"
+        }
+        $hostBedGetterCalls += $getterCalls
+    }
+    $hostBedReaderCalls = @($calls | Where-Object { $_.Target -eq 'System.Object ValheimResourceManager.Plugin::ReadHostBed()' })
+    if ($hostBedReaderCalls.Count -ne 1 -or $hostBedReaderCalls[0].Owner -ne 'System.Void ValheimResourceManager.Plugin::PumpSender(System.Single)') {
+        throw 'Host-bed reader must only be called once from immutable packet construction in PumpSender, outside the asynchronous HTTP worker.'
+    }
     $textureWrites = @($calls | Where-Object { $_.Target -match 'UnityEngine\.(?:Texture2D::(?:ReadPixels|SetPixels32|Apply)|ImageConversion::EncodeToPNG|Object::Destroy|RenderTexture::set_active|Graphics::Blit)' })
     if (@($textureWrites | Where-Object { $_.Owner -notmatch 'Plugin::ExportSprite\(' }).Count -gt 0) { throw 'Texture/export mutation call outside the isolated ExportSprite method.' }
     $destroyCalls = @($textureWrites | Where-Object { $_.Target -match 'UnityEngine.Object::Destroy' })
@@ -51,6 +75,9 @@ try {
         Version=$module.Assembly.Name.Version.ToString()
         NonCallbackGameFieldWrites=$mutations.Count
         ForbiddenRegistryCalls=$unsafe.Count
+        ForbiddenHostBedMutationCalls=$unsafeHostBed.Count
+        HostBedProfileGetterCallSites=$hostBedGetterCalls.Count
+        HostBedReaderCallSites=$hostBedReaderCalls.Count
         IsolatedTextureWriteCallSites=$textureWrites.Count
         PrivateTemporaryTextureAllocationSites=$newTextures.Count
         PluginSHA256=(Get-FileHash -LiteralPath $PluginPath -Algorithm SHA256).Hash

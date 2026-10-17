@@ -333,7 +333,16 @@ namespace ValheimResourceManager
                 if (_pending.Count == 0 && _destroyed.Count == 0 && now < _lastSentAt + 3f) return;
                 var batch = _pending.Values.Take(300).ToArray();
                 var destroyed = _destroyed.Take(1000).ToArray();
-                var payload = new { sourceId = _sourceId.Value, worldId = _worldId, worldName = _worldName, mode = _mode, sessionId = _sessionId, sequence = ++_sequence, containers = batch, destroyedIds = destroyed, coverage = "partial", gameVersion = _gameVersion };
+                var payload = new Dictionary<string, object>
+                {
+                    ["sourceId"] = _sourceId.Value, ["worldId"] = _worldId, ["worldName"] = _worldName,
+                    ["mode"] = _mode, ["sessionId"] = _sessionId, ["sequence"] = ++_sequence,
+                    ["containers"] = batch, ["destroyedIds"] = destroyed, ["coverage"] = "partial", ["gameVersion"] = _gameVersion
+                };
+                // Read the local host's profile only on Unity's main thread, while
+                // creating a new immutable packet. A retry reuses the same body.
+                var hostBed = ReadHostBed();
+                if (hostBed != null) payload["hostBed"] = hostBed;
                 _inFlight = JsonConvert.SerializeObject(payload);
                 foreach (var item in batch) _pending.Remove(item.id);
                 foreach (var id in destroyed) _destroyed.Remove(id);
@@ -355,6 +364,33 @@ namespace ValheimResourceManager
             });
         }
         private float _lastSentAt = -3f;
+
+        private object ReadHostBed()
+        {
+            if (_mode != "host") return null;
+            try
+            {
+                var game = Game.instance;
+                if (!game) return null;
+                var profile = game.GetPlayerProfile();
+                if (profile == null) return null;
+                // These getters resolve the current world UID. Do not call the
+                // respawn resolver: it can clear a saved point or move loading focus.
+                if (!profile.HaveCustomSpawnPoint()) return new { status = "unset" };
+                var point = profile.GetCustomSpawnPoint();
+                if (float.IsNaN(point.x) || float.IsInfinity(point.x) ||
+                    float.IsNaN(point.y) || float.IsInfinity(point.y) ||
+                    float.IsNaN(point.z) || float.IsInfinity(point.z)) return null;
+                return new { status = "set", x = point.x, y = point.y, z = point.z };
+            }
+            catch (Exception ex)
+            {
+                // A temporarily unavailable profile is unknown, never an unset
+                // bed or (0,0,0). No character identity or coordinates are logged.
+                Logger.LogDebug("Host bed observation deferred (" + ex.GetType().Name + ").");
+                return null;
+            }
+        }
 
         private void OnDestroy()
         {
