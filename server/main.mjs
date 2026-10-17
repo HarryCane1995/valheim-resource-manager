@@ -38,7 +38,10 @@ export function createApp({dataDir=resolve(ROOT,'data'),localDataDir=dataDir===r
       const selection={worldId:url.searchParams.get('worldId')||undefined,zoneId:url.searchParams.get('zoneId')||'all'};
       if(req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,service:'VALHEIM RESOURCE MANAGER',version:'0.3.0',localOnly:true});
       if(req.method==='GET' && url.pathname==='/api/state') return json(res,200,store.state(selection));
-      if(req.method==='GET' && url.pathname==='/api/chestsorter') return json(res,200,chestSorter.view(store.state(selection)));
+      if(req.method==='GET' && url.pathname==='/api/chestsorter') {
+        const state=store.state(selection);
+        return json(res,200,chestSorter.view(state,{registry,observedPrefabs:store.observedPrefabs(state.world?.id)}));
+      }
       if(req.method==='GET' && url.pathname==='/api/registry') {registry.reload();return json(res,200,registry.state());}
       if(req.method==='POST' && url.pathname==='/api/registry') {authorizeSource(req);const summary=registry.publish(await body(req));notify(real);notify(demo);return json(res,200,{ok:true,summary});}
       if(req.method==='PUT' && url.pathname==='/api/registry/overrides') {const item=registry.override(await body(req));notify(real);notify(demo);return json(res,200,{ok:true,item,summary:registry.summary()});}

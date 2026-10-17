@@ -73,7 +73,7 @@ function plainFile(path) {
 
 export class ChestSorterReader {
   constructor(gameDirectory) { this.gameDirectory=gameDirectory; }
-  view(state) {
+  view(state, {registry, observedPrefabs=new Set()}={}) {
     let rules, info;
     try {
       const directory=this.gameDirectory?.();
@@ -86,7 +86,19 @@ export class ChestSorterReader {
     } catch(error) {
       info={status:error.code==='ENOENT'?'unavailable':'invalid',categories:[],error:error.line===undefined?null:{line:error.line,code:error.code}};
     }
-    return {...state,chestSorter:info,resources:state.resources.map(item=>({...item,chestSorter:rules?classifyChestSorter(item,rules):{categoryId:null,reason:'rules-unavailable'}}))};
+    const decorate=item=>({...item,chestSorter:rules?classifyChestSorter(item,rules):{categoryId:null,reason:'rules-unavailable'}});
+    const resources=state.resources.map(decorate);
+    // The full definition catalog is separate from stock, thresholds and source freshness.
+    // History is world-wide: consumption, zone changes and the 500m boundary do not reset it.
+    const catalog=new Map(resources.map(item=>[item.prefab,{...item,catalogOnly:false,newToWorld:false}]));
+    const seen=new Set([...observedPrefabs].map(prefab=>registry?.resolve(prefab)?.prefab || prefab));
+    for(const prefab of new Set([...(registry?.entries.keys() || []),...seen])) {
+      if(catalog.has(prefab)) continue;
+      const definition=registry?.describe({prefab,name:prefab}) || {id:'prefab:'+prefab,prefab,name:prefab};
+      catalog.set(prefab,decorate({...definition,catalogOnly:true,newToWorld:Boolean(state.world && !seen.has(prefab)),quantity:0,minimum:0,containerIds:[],variants:[],availableQuantity:null,reservedQuantity:null,reservationsImplemented:false,status:'CATALOG'}));
+    }
+    const items=[...catalog.values()],registered=registry?.entries.size || 0,definitionsFound=registry?.manifest?.coverage?.definitionsFound || 0;
+    return {...state,resources,chestSorter:{...info,catalog:items,catalogSummary:{registered,definitionsFound,unresolvedDefinitions:Math.max(0,definitionsFound-registered),totalItems:items.length,newItems:items.filter(item=>item.newToWorld).length,trackedItems:state.world?items.filter(item=>!item.newToWorld).length:null}}};
   }
 }
 

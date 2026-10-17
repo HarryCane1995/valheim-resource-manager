@@ -76,6 +76,10 @@ export class InventoryStore {
     const insert=this.db.prepare('INSERT INTO observed_items(world_id,prefab,name) VALUES(?,?,?) ON CONFLICT(world_id,prefab) DO UPDATE SET name=excluded.name WHERE observed_items.name<>excluded.name');
     for(const item of items) if(item.quantity>0) insert.run(worldId,item.prefab,item.name);
   }
+  observedPrefabs(worldId) {
+    if(!worldId) return new Set();
+    return new Set(this.db.prepare('SELECT prefab FROM observed_items WHERE world_id=?').all(worldId).map(item=>this.registry.resolve(item.prefab)?.prefab || item.prefab));
+  }
   ingest(payload) {
     const now = this.now();
     let bedReport;

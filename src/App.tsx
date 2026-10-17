@@ -96,7 +96,7 @@ export default function App(){
  const navigate=(next:Page)=>{setPage(next);setMenu(false);};
  const resources=useMemo(()=>sortResources(state.resources.filter(r=>(category==='Все ресурсы'||r.category===category)&&(clusterId==='all'||r.clusterId===clusterId)&&(quickFilter==='all'||(quickFilter==='shortage'?r.minimum>r.quantity:r.prefab.startsWith('hash:')||Boolean(r.diagnostics?.includes('UNKNOWN ITEM'))))&&itemMatches(r,query)&&(page!=='minimums'||r.minimum>0||Number(state.minimums[r.prefab])>0)),sort,sortDirection,state),[state,category,clusterId,quickFilter,query,sort,sortDirection,page]);
  const filteredSummary=useMemo(()=>summarizeResources(resources),[resources]);
- const selectedResource=state.resources.find(r=>itemKey(r)===selected);
+ const selectedResource=state.resources.find(r=>itemKey(r)===selected)||(page==='chestsorter'?state.chestSorter?.catalog?.find(r=>itemKey(r)===selected):undefined);
  const realSourceConnected=state.source.connected&&apiAvailable!==false;
  const snapshotSource=String(state.source.mode).toLowerCase().includes('snapshot');
  const lastConfirmed=state.source.lastConfirmedAt||(snapshotSource?state.containers.reduce((latest,c)=>!latest||new Date(c.observedAt)>new Date(latest)?c.observedAt:latest,''):null)||state.source.lastSeenAt;
