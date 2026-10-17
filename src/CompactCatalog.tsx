@@ -1,6 +1,7 @@
 import { CSSProperties, memo, MutableRefObject, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns3, TriangleAlert } from 'lucide-react';
 import { ResourceIcon } from './ResourceIcon';
+import { StockGauge } from './StockGauge';
 import { groupResources, itemKey, readPreference, resourceAvailable, resourceReserved, resourceZones, savePreference, SortColumn } from './catalog';
 import { categoryKey, clusterGroups, clusterKey, compactGroupsKey, CompactGroupPreferences, defaultGroupPreferences, groupIsOpen, GroupMode, isCompactGroupPreferences, legacyCategoryKey, ResourceSummary, summarizeResources, toggleCollapsedGroup } from './clusters';
 import { Resource, State } from './types';
@@ -105,7 +106,7 @@ const CompactRow=memo(function CompactRow({resource:r,columns:activeColumns,dept
   {activeColumns.map(column=><td key={column.id} className={`cell-${column.id}`}>
    {column.id==='icon'&&<ResourceIcon prefab={r.prefab} name={r.name} category={r.category} iconUrl={r.iconUrl}/>}
    {column.id==='name'&&<div className="compact-item-name"><strong title={[r.nameRu,r.nameEn,r.prefab,itemKey(r)].filter(Boolean).join(' · ')}>{r.name}</strong>{unknown&&<span className="unknown-tag" title="UNKNOWN ITEM: исходный идентификатор сохранён">?</span>}{low&&<span className="compact-shortage" title={`Дефицит ${fmt(r.minimum-r.quantity)} · минимум ${fmt(r.minimum)}`}><TriangleAlert size={11}/>{fmt(r.minimum-r.quantity)}</span>}</div>}
-   {column.id==='quantity'&&fmt(r.quantity)}
+   {column.id==='quantity'&&<span className="compact-quantity-stock"><span>{fmt(r.quantity)}</span><StockGauge quantity={r.quantity} minimum={r.minimum} compact showLabel={false}/></span>}
    {column.id==='available'&&(available!==null?fmt(available):<span className="unknown-value" title="Доступный остаток не передан">—</span>)}
    {column.id==='reserved'&&(reserved!==null?fmt(reserved):<span className="unknown-value" title="Резервирование не реализовано">—</span>)}
    {column.id==='containers'&&new Set(r.containerIds).size}

@@ -68,6 +68,11 @@ export function createApp({dataDir=resolve(ROOT,'data'),localDataDir=dataDir===r
         const value=await body(req);const worldId=worldBody(value);string(value.prefab,'prefab',200);number(value.minimum,'minimum',{min:0,max:1_000_000_000,integer:true});
         const state=store.minimum(worldId,value.prefab,value.minimum);notify(store);return json(res,200,state);
       }
+      if(req.method==='PUT' && url.pathname==='/api/minimums/default') {
+        const value=await body(req);const worldId=worldBody(value);number(value.minimum,'minimum',{min:0,max:1_000_000_000,integer:true});
+        if(value.resetOverrides!==undefined && typeof value.resetOverrides!=='boolean') throw new ApiError(400,'resetOverrides: требуется true или false.');
+        const state=store.defaultMinimum(worldId,value.minimum,{resetOverrides:value.resetOverrides ?? false});notify(store);return json(res,200,state);
+      }
       const zoneMatch=/^\/api\/zones\/([^/]+)$/.exec(url.pathname);
       if((req.method==='POST' && url.pathname==='/api/zones') || (req.method==='PUT' && zoneMatch)) {
         const value=validateZone(await body(req));const id=zoneMatch?decodeURIComponent(zoneMatch[1]):undefined;

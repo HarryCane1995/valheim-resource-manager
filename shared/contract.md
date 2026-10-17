@@ -1,5 +1,12 @@
 # Local API contract
 
+Minimum defaults and stock display:
+
+- `PUT /api/minimums/default` with `{worldId, minimum, resetOverrides?: boolean}` sets a persistent per-world integer minimum (0–1,000,000,000). `resetOverrides:true` atomically clears individual minima. A new world defaults to 0 until configured. The requested working world uses 200.
+- State includes numeric `defaultMinimum`. Each resource's `minimum` is its individual override, including explicit 0, or this default. Existing individual `PUT /api/minimums` remains supported.
+- An observed-item watch set retains genuinely seen resources after depletion/destruction at zero when their effective minimum is positive. It is seeded from recorded container inventories and deliberate individual minima, never the entire registry. Future observed items inherit the default. Scopes change quantities; thresholds/watch set belong to the world. An absent item with an explicit minimum of 0 is hidden. A host bed reported as unset still pauses all accounting and zero rows.
+- Stock level is deficit below minimum, near from minimum to less than 125%, surplus at 125% or higher. Thus a 200 minimum means red 0–199, yellow 200–249, green 250+. The meter marks the minimum at 80% of its range, keeps actual quantities in accessible text and stays neutral for disabled/invalid minima. Source freshness remains a separate status.
+
 Node 24 backend listens only at `http://127.0.0.1:37841`; production assets are served from `dist/`.
 
 - `GET /api/state?demo=0|1&worldId=<id>&zoneId=all|<id>` returns the selected database state. Omitting world selects the first world. Omitting zone is `all`.
@@ -22,7 +29,7 @@ State shape: `{demo,worlds:[{id,name}],world:{id,name}|null,source:{connected,mo
 
 Valheim 1.0.20 does not persist runtime ZDOIDs in the parsed chunk-42 save layout. Stable stationary-container identity is `pos-v1:<signed decimal prefabHash>:<x float32 bits hex8>:<y bits>:<z bits>`. With an identityKey, `state.id` is `stable:<identityKey>` (use this ID in label API and React keys), and `state.zdoId` is the latest exact runtime ZDO string, or an explicitly snapshot-prefixed ID. Labels and minima survive live reconciliation after restart. Never coerce ZDOIDs to JS numbers. Duplicate identities or conflicting positions fail closed, rolling back the complete packet. Destruction IDs resolve only against a matching source/current session; a recycled ID cannot delete an old session's unrelated container. Moving containers are excluded by the collector. The legacy no-identity path exists for API fixtures; the integration should always supply stable identity.
 
-Resource `status` is the least current contributing container status. Shortage = minimum > quantity; minimum-only resources are included at zero. Default minima are not invented in the real store. The first actual observation creates an editable `Основная база` zone centered at that observation with radius 100 m and `proposed:true`; it is an initial location suggestion, not a claim of complete base coverage. Saving zone coordinates clears `proposed`. `zoneId=all` counts all known containers, including outside configured zones. A selected zone counts containers within its X/Z circle, retaining all other container records.
+Resource `status` is the least current contributing container status. Shortage = minimum > quantity; minimum-only resources are included at zero. A new world has default minimum 0 until explicitly configured; an individual minimum overrides it, including 0. The first actual observation creates an editable `Основная база` zone centered at that observation with radius 100 m and `proposed:true`; it is an initial location suggestion, not a claim of complete base coverage. Saving zone coordinates clears `proposed`. `zoneId=all` counts known containers within any active host-bed radius, including outside manual zones. A selected zone counts containers within its X/Z circle, retaining all other container records.
 
 PASS 2 registry and icons:
 

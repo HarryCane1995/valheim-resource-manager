@@ -1,0 +1,13 @@
+.stock-gauge{--stock-color:#82909a;display:flex;flex-direction:column;gap:5px;width:100%;min-width:0;color:var(--stock-color)}
+.stock-gauge[data-stock-level=deficit]{--stock-color:#e2766c}
+.stock-gauge[data-stock-level=near]{--stock-color:#d8b058}
+.stock-gauge[data-stock-level=surplus]{--stock-color:#78b18b}
+.stock-gauge__label{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:9px;line-height:1.35;font-weight:500;font-variant-numeric:tabular-nums}
+.stock-gauge__label>span:last-child{color:#9faab1;font-size:8px;white-space:nowrap}
+.stock-gauge__track{position:relative;display:block;height:5px;flex-shrink:0;border-radius:3px;background:color-mix(in srgb,var(--stock-color) 18%,#151c22);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--stock-color) 18%,transparent);overflow:hidden}
+.stock-gauge__fill{position:absolute;inset:0 auto 0 0;width:var(--stock-fill);background:var(--stock-color);border-radius:inherit}
+.stock-gauge__minimum{position:absolute;left:var(--stock-minimum);top:0;bottom:0;width:1px;background:#f2e9d1;box-shadow:0 0 0 1px #141a2055}
+.stock-gauge--compact{gap:2px}
+.stock-gauge--compact .stock-gauge__track{height:3px;border-radius:2px}
+.stock-gauge--compact .stock-gauge__label{font-size:8px;line-height:1.1;gap:4px}
+.stock-gauge--compact .stock-gauge__label>span:last-child{font-size:8px}
