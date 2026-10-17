@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,6 +6,8 @@ import { Worker } from 'node:worker_threads';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startBackend, resolvePortablePaths, detectValheimProcess } from './runtime.mjs';
 import { createApp } from '../server/main.mjs';
+import { inspectGame, ensureLocalToken, ensureGameIntegration, discoverGameDirectories, STEAM_GAME_URL } from './integration.mjs';
+import { createHash } from 'node:crypto';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // Overrides are for isolated acceptance tests; ordinary launch needs no arguments.
@@ -26,9 +28,65 @@ let retryAfter = 0;
 const configFile = join(paths.dataDir, 'snapshot-source.json');
 const checkpointFile = join(paths.dataDir, 'snapshot-checkpoint.json');
 let checkpoint = {};
+const gamePrefsFile = join(paths.dataDir, 'desktop-game.json');
+let gamePrefs = readJSON(gamePrefsFile) || { autoLaunch: true };
+let gameDirectory = typeof gamePrefs.gameDirectory === 'string' ? gamePrefs.gameDirectory : null;
+let integration = { state: 'checking', autoLaunch: gamePrefs.autoLaunch !== false, canLaunch: false };
+let bundledDll, nextIntegration = 0, integrationBusy = false, autoLaunchAttempted = false;
 function readJSON(path) { try { return JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, '')); } catch { return null; } }
 function writeJSON(path, value) { const temp = path + '.desktop-tmp'; writeFileSync(temp, JSON.stringify(value, null, 2)); renameSync(temp, path); }
-function status() { return { game: { state: game.state }, backend: backend?.ownsBackend ? 'owned' : 'attached', fullscreen: win?.isFullScreen() || false, snapshot, activeWorld }; }
+function status() { return { game: { state: game.state }, backend: backend?.ownsBackend ? 'owned' : 'attached', fullscreen: win?.isFullScreen() || false, snapshot, activeWorld, integration }; }
+async function prepareIntegration() {
+  // Existing isolated QA ports must never inspect or change the actual game.
+  if (PORT !== 37841) { integration = { state: 'test-mode', autoLaunch: false, canLaunch: false }; return; }
+  try {
+    bundledDll = join(ROOT, 'desktop', 'bundled', 'ValheimResourceManager.dll');
+    const manifest = readJSON(join(ROOT, 'desktop', 'bundled', 'plugin.json'));
+    if (!manifest || createHash('sha256').update(readFileSync(bundledDll)).digest('hex') !== manifest.sha256) throw Error('bundle');
+    if (!gameDirectory) {
+      const candidates = await discoverGameDirectories();
+      if (candidates.length !== 1) { integration = { ...integration, state: candidates.length ? 'choose-game' : 'game-not-found' }; return; }
+      gameDirectory = candidates[0];
+    }
+    const inspected = inspectGame(gameDirectory, bundledDll);
+    ensureLocalToken(paths.dataDir, inspected);
+  } catch (error) { integration = { ...integration, state: error.code || 'bundle-missing' }; }
+}
+async function launchGame() {
+  if (integration.state !== 'ready') throw Error('GAME_NOT_READY');
+  autoLaunchAttempted = true;
+  const current = await detectValheimProcess();
+  if (current.state !== 'not-running') return;
+  await shell.openExternal(STEAM_GAME_URL);
+}
+async function connectGame() {
+  if (PORT !== 37841 || integrationBusy || quitting || !bundledDll) return;
+  integrationBusy = true;
+  try {
+    if (!gameDirectory) { nextIntegration = Date.now() + 30_000; await prepareIntegration(); }
+    if (!gameDirectory) return;
+    if (backend && !backend.ownsBackend) {
+      const response = await fetch(backend.url + '/api/ingest', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-VRM-Token': readFileSync(join(paths.dataDir, 'ingest-token.txt'), 'utf8').trim() }, body: '{}', signal: AbortSignal.timeout(2000) });
+      if (response.status !== 400) { integration = { ...integration, state: 'app-conflict', canLaunch: false }; return; }
+    }
+    const result = await ensureGameIntegration({ gameDir: gameDirectory, dataDir: paths.dataDir, bundledDll, gameState: detectValheimProcess });
+    integration = { state: result.state, autoLaunch: gamePrefs.autoLaunch !== false, canLaunch: result.state === 'ready' };
+    if (result.state === 'ready') {
+      if (gamePrefs.gameDirectory !== gameDirectory) { gamePrefs.gameDirectory = gameDirectory; writeJSON(gamePrefsFile, gamePrefs); }
+      if (!autoLaunchAttempted && gamePrefs.autoLaunch !== false && process.env.VRM_DESKTOP_NO_GAME_LAUNCH !== '1') await launchGame();
+    }
+  } catch { integration = { ...integration, state: 'error', canLaunch: false }; }
+  finally { integrationBusy = false; }
+}
+async function chooseGame() {
+  if (integrationBusy) return;
+  const picked = await dialog.showOpenDialog(win, { title: 'Папка Valheim с установленным BepInEx', properties: ['openDirectory'] });
+  if (picked.canceled) return;
+  gameDirectory = picked.filePaths[0];
+  gamePrefs.gameDirectory = gameDirectory;
+  writeJSON(gamePrefsFile, gamePrefs);
+  await connectGame();
+}
 function trusted(event) {
   if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame || new URL(event.senderFrame.url).origin !== backend.url) throw Error('Untrusted desktop request');
 }
@@ -52,6 +110,7 @@ async function refreshStatus() {
   busy = true;
   try {
     game = await detectValheimProcess();
+    if (Date.now() >= nextIntegration) { nextIntegration = Date.now() + 5000; await connectGame(); }
     const first = await json('/api/state');
     const states = [first];
     for (const world of first.worlds) if (world.id !== first.world?.id) states.push(await json('/api/state?worldId=' + encodeURIComponent(world.id)));
@@ -135,6 +194,9 @@ async function openWindow() {
   ipcMain.handle('vrm:status', event => { trusted(event); return status(); });
   ipcMain.handle('vrm:fullscreen', event => { trusted(event); return toggle(); });
   ipcMain.handle('vrm:save', async event => { trusted(event); await chooseSave(); });
+  ipcMain.handle('vrm:game-folder', async event => { trusted(event); await chooseGame(); });
+  ipcMain.handle('vrm:launch-game', async event => { trusted(event); await launchGame(); });
+  ipcMain.handle('vrm:auto-launch', (event, enabled) => { trusted(event); if (typeof enabled !== 'boolean') throw Error('Invalid setting'); gamePrefs.autoLaunch = enabled; writeJSON(gamePrefsFile, gamePrefs); integration.autoLaunch = enabled; });
   await win.loadURL(backend.url);
   win.show();
 }
@@ -146,9 +208,10 @@ else {
     if (quitting) return;
     event.preventDefault(); quitting = true;
     clearInterval(timer);
-    Promise.resolve(worker?.terminate()).then(() => backend?.close()).finally(() => app.quit());
+    Promise.resolve(worker?.terminate()).then(async () => { while (integrationBusy) await delay(50); await backend?.close(); }).finally(() => app.quit());
   });
   app.whenReady().then(async () => {
+    await prepareIntegration();
     backend = await startBackend({ ...paths, distDir: join(ROOT, 'dist'), port: PORT, createApp });
     sourceConfig = readJSON(configFile);
     if (typeof sourceConfig?.worldFolder !== 'string' || typeof sourceConfig?.worldId !== 'string') sourceConfig = null;

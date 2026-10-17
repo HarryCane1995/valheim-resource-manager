@@ -2,16 +2,28 @@ import { cpSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSy
 import { resolve, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { build } from 'electron-builder';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { AUDITED_GAME_SHA256 } from './integration.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const stage = join(root, '.runtime', 'desktop-package-' + Date.now());
 mkdirSync(stage, { recursive: true });
+const pluginBuild = join(root, '.runtime', 'onefile-plugin-' + Date.now());
+const gameDirectory = process.env.VRM_GAME_DIRECTORY || 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Valheim';
+const pluginResult = spawnSync('dotnet', ['build', join(root,'plugin','ValheimResourceManager.csproj'), '-c','Release','-p:DebugType=None','-p:DebugSymbols=false','-p:Deterministic=true','-p:IncludeSourceRevisionInInformationalVersion=false','-p:PathMap='+root+'=/_/','-p:GameDirectory='+gameDirectory,'-o',pluginBuild,'-v:q'], { encoding:'utf8',windowsHide:true,maxBuffer:8*1024*1024 });
+if (pluginResult.status !== 0) throw Error('Could not build bundled plugin against installed game references.');
+const pluginBytes = readFileSync(join(pluginBuild,'ValheimResourceManager.dll'));
+if (/[A-Z]:[\\/]Users[\\/]/i.test(pluginBytes.toString('latin1'))) throw Error('Personal build path in bundled plugin.');
 for (const dir of ['server', 'shared', 'desktop']) {
   mkdirSync(join(stage, dir), { recursive: true });
   for (const name of readdirSync(join(root, dir))) if ((name.endsWith('.mjs') && !name.endsWith('.test.mjs') && name !== 'build.mjs') || name === 'preload.cjs') cpSync(join(root, dir, name), join(stage, dir, name));
 }
 cpSync(join(root, 'dist'), join(stage, 'dist'), { recursive: true });
 cpSync(join(root, 'node_modules', 'ws'), join(stage, 'node_modules', 'ws'), { recursive: true });
+mkdirSync(join(stage,'desktop','bundled'));
+writeFileSync(join(stage,'desktop','bundled','ValheimResourceManager.dll'),pluginBytes);
+writeFileSync(join(stage,'desktop','bundled','plugin.json'),JSON.stringify({sha256:createHash('sha256').update(pluginBytes).digest('hex'),gameSha256:AUDITED_GAME_SHA256}));
 const version = JSON.parse(readFileSync(join(root, 'package.json'))).version;
 writeFileSync(join(stage, 'package.json'), JSON.stringify({ name: 'valheim-resource-manager', productName: 'Valheim Resource Manager', version, description: 'Локальный учёт ресурсов Valheim', author: 'HarryCane1995', license: 'UNLICENSED', type: 'module', main: 'desktop/main.mjs', dependencies: { ws: JSON.parse(readFileSync(join(root, 'node_modules', 'ws', 'package.json'))).version } }, null, 2));
 // Rasterize our own geometric favicon; no game images enter the package.
@@ -27,5 +39,6 @@ const icon=join(stage,'desktop','icon.ico');writeFileSync(icon,Buffer.concat([ic
 const artifacts=await build({ config: { appId:'HarryCane1995.ValheimResourceManager', productName:'Valheim Resource Manager', electronVersion:'44.9.0', electronDist:join(root,'node_modules','electron','dist'), directories:{app:stage,output:join(root,'output','desktop','build-'+Date.now())}, npmRebuild:false, nodeGypRebuild:false, files:['**/*'], asar:true, win:{target:[{target:'portable',arch:['x64']}],icon,signAndEditExecutable:false}, portable:{artifactName:'ValheimResourceManager-${version}-portable.exe',requestExecutionLevel:'user',unpackDirName:false}, compression:'normal', publish:null } });
 const exe=artifacts.find(path=>path.endsWith('.exe'));
 if(!exe)throw Error('Portable executable was not produced');
-copyFileSync(exe,join(root,'ValheimResourceManager.exe'));
-console.log('Portable EXE ready: ValheimResourceManager.exe');
+const destination=resolve(root,process.argv.find(arg=>arg.startsWith('--out='))?.slice(6)||'ValheimResourceManager.exe');
+copyFileSync(exe,destination);
+console.log('Portable EXE with embedded plugin ready: '+destination);

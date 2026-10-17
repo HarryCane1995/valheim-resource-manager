@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FolderOpen, Gamepad2, LoaderCircle, Maximize2, Minimize2, Radio, TriangleAlert } from 'lucide-react';
 import './desktop.css';
+import { GameConnection } from './GameConnection';
 
 export type DesktopWorld = { id: string; name: string };
 export type DesktopStatus = {
@@ -9,6 +10,7 @@ export type DesktopStatus = {
   fullscreen: boolean;
   snapshot: { status: string; message?: string; worldName?: string; worldId?: string };
   activeWorld: DesktopWorld | null;
+  integration?: { state: string; autoLaunch: boolean; canLaunch: boolean };
 };
 
 declare global {
@@ -17,6 +19,9 @@ declare global {
       getStatus: () => Promise<DesktopStatus>;
       toggleFullscreen: () => Promise<boolean>;
       chooseSave: () => Promise<void>;
+      chooseGame?: () => Promise<void>;
+      launchGame?: () => Promise<void>;
+      setAutoLaunch?: (enabled: boolean) => Promise<void>;
     };
   }
 }
@@ -87,7 +92,7 @@ export function DesktopControls({ onActiveWorld }: { onActiveWorld: (world: Desk
   const snapshotSelected = !status?.activeWorld && Boolean(status?.snapshot.worldId);
   const shownWorldName = status?.activeWorld?.name || (snapshotSelected ? status?.snapshot.worldName : '') || 'Ожидаем подключение мира';
 
-  return <section className="desktop-controls" aria-label="Приложение Valheim" data-testid="desktop-controls">
+  return <><GameConnection integration={status?.integration} running={gameState==='running'} onRefresh={refresh}/><section className="desktop-controls" aria-label="Приложение Valheim" data-testid="desktop-controls">
     <div className={`desktop-game desktop-game-${gameState}`}><Gamepad2 size={17} aria-hidden="true"/><span className="desktop-game-dot"/><strong>{gameLabel}</strong></div>
     <div className="desktop-world"><span>{snapshotSelected ? 'ВЫБРАННЫЙ СНИМОК' : 'АКТИВНЫЙ МИР'}</span><strong title={shownWorldName}>{shownWorldName}</strong></div>
     <div className={`desktop-snapshot ${snapshotError ? 'has-error' : ''}`} role="status" title={unavailable ? 'Нет связи с приложением' : snapshotLabel}>
@@ -109,5 +114,5 @@ export function DesktopControls({ onActiveWorld }: { onActiveWorld: (world: Desk
       }}>{status?.fullscreen ? <Minimize2 size={14} aria-hidden="true"/> : <Maximize2 size={14} aria-hidden="true"/>}<span>Полный экран</span><kbd>F11</kbd></button>
     </div>
     {actionError && <span className="desktop-action-error" role="alert">{actionError}</span>}
-  </section>;
+  </section></>;
 }
