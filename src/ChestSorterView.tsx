@@ -12,6 +12,14 @@ const unknownKey='unresolved';
 const reasonText:Record<string,string>={'missing-prefab':'Нужен точный prefab из реестра','missing-item-type':'В реестре нет типа предмета','missing-food-data':'В реестре нет пищевых свойств','rules-unavailable':'Правила мода недоступны'};
 type Group={key:string;category:ChestSorterCategory;items:Resource[]};
 
+function ChestSetupCheckbox({worldId,categoryKey,name}:{worldId?:string;categoryKey:string;name:string}) {
+ const storageKey=`vrm.chestsorter.chestReady.v1.${JSON.stringify([worldId,categoryKey])}`;
+ const [checked,setChecked]=useState(()=>readPreference(storageKey,false,(value):value is boolean=>typeof value==='boolean'));
+ return <label className={`chestsorter-chest-ready${checked?' checked':''}`} title={worldId?'Ваша пометка для этой категории в выбранном мире':'Сначала выберите мир'}>
+  <input type="checkbox" aria-label={`Сундук настроен: ${name}`} checked={checked} disabled={!worldId} onChange={event=>{setChecked(event.target.checked);savePreference(storageKey,event.target.checked);}}/>Сундук настроен
+ </label>;
+}
+
 export function ChestSorterView({state,onSelect}:{state:State;onSelect:(id:string)=>void}) {
  const [query,setQuery]=useState(''),[category,setCategory]=useState('all'),[shortages,setShortages]=useState(false),[sort,setSort]=useState('name');
  const [columns,setColumns]=useState(()=>readPreference('vrm.chestsorter.columns',2,(v):v is number=>v===1||v===2));
@@ -59,7 +67,7 @@ export function ChestSorterView({state,onSelect}:{state:State;onSelect:(id:strin
    {filtered.map(group=>{
     const open=Boolean(query.trim())||!collapsed.includes(group.key),total=group.items.reduce((sum,item)=>sum+item.quantity,0);
     return <section className="chestsorter-group" key={group.key} data-testid="chestsorter-category" data-category={group.category.id}>
-     <button className="chestsorter-group-heading" aria-expanded={open} onClick={()=>toggleGroup(group.key)}><ChevronRight size={16} className={open?'expanded':''}/><span><strong>{group.category.name}</strong>{group.category.parentId&&<small>Входит в {groups.find(entry=>entry.category.id===group.category.parentId)?.category.name||group.category.parentId}</small>}</span><span className="chestsorter-group-count">{group.items.length} типов · {fmt(total)} ед.</span></button>
+     <div className="chestsorter-group-header"><button className="chestsorter-group-heading" aria-expanded={open} onClick={()=>toggleGroup(group.key)}><ChevronRight size={16} className={open?'expanded':''}/><span><strong>{group.category.name}</strong>{group.category.parentId&&<small>Входит в {groups.find(entry=>entry.category.id===group.category.parentId)?.category.name||group.category.parentId}</small>}</span><span className="chestsorter-group-count">{group.items.length} типов · {fmt(total)} ед.</span></button><ChestSetupCheckbox key={JSON.stringify([state.world?.id,group.key])} worldId={state.world?.id} categoryKey={group.key} name={group.category.name}/></div>
      {open&&<div className="chestsorter-items">{group.items.map(resource=><button className="chestsorter-item" key={itemKey(resource)} data-testid="chestsorter-item" data-item={itemKey(resource)} data-quantity={resource.quantity} onClick={()=>onSelect(itemKey(resource))}>
       <ResourceIcon prefab={resource.prefab} category={resource.category} name={resource.name} iconUrl={resource.iconUrl}/><span className="chestsorter-item-name"><strong title={`${resource.name} · ${resource.prefab}`}>{resource.name}</strong><small title={reasonText[resource.chestSorter?.reason||'']||resource.prefab}>{reasonText[resource.chestSorter?.reason||'']||resource.nameEn||resource.prefab}</small></span><span className="chestsorter-item-stock"><strong>{fmt(resource.quantity)} <small>/ {fmt(resource.minimum)}</small></strong><StockGauge quantity={resource.quantity} minimum={resource.minimum}/></span><span className={`data-status status-${resource.status.toLowerCase()}`} title="Свежесть последних данных"><i/>{resource.status==='SNAPSHOT'?'СНИМОК':resource.status==='STALE'?'УСТАРЕЛО':resource.status==='OFFLINE'?'ОФЛАЙН':resource.status}</span>
      </button>)}{!group.items.length&&<p className="chestsorter-empty-category">В выбранной области нет ресурсов этой категории.</p>}</div>}
