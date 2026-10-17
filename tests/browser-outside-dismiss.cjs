@@ -1,0 +1,57 @@
+// Fresh tests/start-host-bed-qa.mjs server required. No real game data or writes.
+async page=>{
+ const base='http://127.0.0.1:37843',checks=[],errors=[];
+ const check=(name,ok)=>{if(!ok)throw Error(name);checks.push(name);};
+ page.on('pageerror',error=>errors.push(String(error)));
+ const seeded=await page.request.post(base+'/api/ingest',{headers:{'X-VRM-Token':'host-bed-browser-fixture-no-game-authority'},data:{worldId:'dismiss-qa',worldName:'Синтетическая проверка меню',sourceId:'dismiss-test',sessionId:'dismiss-test',sequence:1,mode:'host',coverage:'partial',gameVersion:'SYNTHETIC',hostBed:{status:'set',x:0,y:7,z:0},containers:[{id:'dismiss-chest',type:'piece_chest',name:'Тестовый сундук',x:0,y:7,z:0,observedAt:new Date().toISOString(),items:[{prefab:'Wood',name:'Wood',quantity:100,quality:1},{prefab:'Wood',name:'Wood',quantity:10,quality:2},...['Stone','Iron','Copper','Honey','Coins'].map(prefab=>({prefab,name:prefab,quantity:20}))]}],destroyedIds:[]}});
+ check('synthetic setup',seeded.ok());
+ await page.goto(base);await page.evaluate(()=>localStorage.clear());await page.reload();
+ await page.getByTestId('mode-compact').click();await page.getByLabel('Группировка').selectOption('none');
+ const row=prefab=>page.locator(`[data-testid="compact-resource-row"][data-prefab="${prefab}"]`);
+ const drawer=page.getByTestId('resource-drawer'),search=page.getByRole('textbox',{name:'Поиск ресурсов',exact:true});
+ await row('Wood').click();await drawer.waitFor();
+ const minimum=page.getByRole('spinbutton',{name:'Минимальный запас',exact:true});
+ await minimum.click();await minimum.fill('201');check('inside input stays open',await drawer.isVisible()&&await minimum.inputValue()==='201');
+ await search.click();await drawer.waitFor({state:'hidden'});check('outside main click closes and focuses search',await search.evaluate(el=>document.activeElement===el));
+ await row('Wood').click();await drawer.waitFor();await row('Stone').click();
+ await page.waitForFunction(()=>document.querySelector('.drawer-item-metadata')?.textContent.includes('Stone'));
+ check('one click opens another resource',await drawer.isVisible());
+ const classification=page.getByTestId('classification-editor');
+ await classification.locator('summary').click();await page.getByLabel('Кластер предмета',{exact:true}).selectOption('construction');
+ check('classification controls stay open',await classification.evaluate(el=>el.open)&&await drawer.isVisible());
+ await minimum.click();check('outside details inside drawer closes only details',!await classification.evaluate(el=>el.open)&&await drawer.isVisible());
+ await classification.locator('summary').click();await page.keyboard.press('Escape');
+ check('Escape closes child first',!await classification.evaluate(el=>el.open)&&await drawer.isVisible());
+ await page.keyboard.press('Escape');await drawer.waitFor({state:'hidden'});check('next Escape closes drawer',true);
+ await row('Wood').click();await drawer.waitFor();const variants=drawer.locator('.drawer-variants');await variants.locator('summary').click();
+ await variants.locator('p').first().click();check('variants inside click stays open',await variants.evaluate(el=>el.open));
+ await search.click();await drawer.waitFor({state:'hidden'});check('outside variants closes drawer too',true);
+ const columns=page.locator('.column-picker');await columns.locator('summary').click();
+ const reserve=columns.getByRole('checkbox',{name:'Резерв',exact:true});await reserve.uncheck();await reserve.check();
+ check('column checkbox keeps menu open',await columns.evaluate(el=>el.open));
+ await search.click();check('column menu closes outside',!await columns.evaluate(el=>el.open));
+ await columns.locator('summary').click();await page.keyboard.press('Escape');check('column menu closes on Escape',!await columns.evaluate(el=>el.open));
+ await columns.locator('summary').click();
+ await page.getByRole('button',{name:'Помощь и подключение',exact:true}).first().focus();await page.keyboard.press('Enter');
+ const keyboardHelp=page.getByRole('dialog',{name:'Подключение Valheim',exact:true});await keyboardHelp.waitFor();
+ check('keyboard Help leaves background menu open',await columns.evaluate(el=>el.open));
+ await page.keyboard.press('Escape');await keyboardHelp.waitFor({state:'hidden'});
+ check('Escape dismisses top layer before background menu',await columns.evaluate(el=>el.open));
+ await page.keyboard.press('Escape');check('next Escape closes background menu',!await columns.evaluate(el=>el.open));
+ await page.getByRole('button',{name:/^Склады(?: |$)/}).click();const extra=page.locator('.storage-items details').first();await extra.locator('summary').click();
+ await extra.locator('div').first().click();check('storage extra inside stays open',await extra.evaluate(el=>el.open));
+ await page.getByRole('textbox',{name:'Поиск контейнеров',exact:true}).click();check('storage extra closes outside',!await extra.evaluate(el=>el.open));
+ await page.getByRole('button',{name:'Складские зоны',exact:true}).click();await page.getByRole('button',{name:'Добавить зону',exact:true}).click();
+ const zone=page.getByRole('dialog',{name:'Новая складская зона',exact:true});await zone.getByRole('textbox',{name:'Название',exact:true}).click();check('zone inside stays open',await zone.isVisible());
+ await page.mouse.click(200,75);await zone.waitFor({state:'hidden'});check('zone closes outside',true);
+ await page.getByRole('button',{name:'Добавить зону',exact:true}).click();await page.keyboard.press('Escape');await zone.waitFor({state:'hidden'});check('zone closes on Escape',true);
+ const openHelp=()=>page.getByRole('button',{name:'Помощь и подключение',exact:true}).first().click();
+ await openHelp();const help=page.getByRole('dialog',{name:'Подключение Valheim',exact:true});await help.locator('h2').click();check('help inside stays open',await help.isVisible());
+ await page.mouse.click(200,75);await help.waitFor({state:'hidden'});check('help closes outside',true);
+ await openHelp();await page.keyboard.press('Escape');await help.waitFor({state:'hidden'});check('help closes on Escape',true);
+ await page.getByRole('button',{name:'Обзор ресурсов',exact:true}).click();
+ for(let i=0;i<3;i++){await row('Wood').click();await drawer.waitFor();await search.click();await drawer.waitFor({state:'hidden'});}
+ check('repeated open close cleans up listeners',true);
+ check('no browser JS errors',errors.length===0);
+ return {result:'PASS',synthetic:true,checks};
+}
