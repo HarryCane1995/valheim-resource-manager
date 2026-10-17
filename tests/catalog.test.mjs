@@ -35,6 +35,13 @@ test('empty search preserves zero quantity and unknown items',()=>{
  const items=[wood,resource({id:'prefab:hash:42',prefab:'hash:42',name:'Неизвестный предмет',quantity:0,diagnostics:['UNKNOWN ITEM']})];
  assert.equal(items.filter(item=>itemMatches(item,' ')).length,2);
 });
+test('cluster names, hierarchical categories and mod tags are searchable globally',()=>{
+ const item=resource({clusterName:'Металлургия',clusterCategory:'Обработанные металлы и сплавы',tags:['modded','Сплав']});
+ assert.equal(itemMatches(item,'МЕТАЛЛУРГИЯ'),true);
+ assert.equal(itemMatches(item,'обработанные металлы'),true);
+ assert.equal(itemMatches(item,'modded'),true);
+ assert.equal(itemMatches(item,'несуществующий тег'),false);
+});
 test('stable IDs keep same-name mod and vanilla definitions separate',()=>{
  const mod=resource({id:'prefab:ModWood',prefab:'ModWood',name:wood.name});
  assert.notEqual(itemKey(wood),itemKey(mod));

@@ -1,7 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { RUSSIAN_ITEM_NAMES } from './catalog.mjs';
+import { classifyItem, SYSTEM_CLUSTERS } from './clusters.mjs';
 
 export const CATEGORIES = Object.freeze(['Древесина и растения','Камень и минералы','Руды и металлы','Строительные материалы','Сельское хозяйство','Сырые продукты','Приготовленная еда','Ингредиенты','Трофеи','Кожа, кости и ткани','Оружие','Броня','Инструменты','Боеприпасы','Зелья и расходники','Ценные предметы','Ключевые и специальные предметы','Прочее']);
 export const ICON_KEY = /^[a-f0-9]{64}$/;
@@ -97,18 +98,18 @@ export function validateRegistry(value) {
 
 export class ItemRegistry {
   constructor(localDataDir) {
-    this.directory=resolve(localDataDir);this.file=resolve(this.directory,'registry/items.json');this.overridesFile=resolve(this.directory,'registry/overrides.json');this.iconDirectory=resolve(this.directory,'icons');
-    this.generation=0;this.filesSignature='';this.manifest=null;this.entries=new Map();this.hashes=new Map();this.overrides={};this.loadError=null;this.reload();
+    this.directory=resolve(localDataDir);this.file=resolve(this.directory,'registry/items.json');this.overridesFile=resolve(this.directory,'registry/overrides.json');this.clustersFile=resolve(this.directory,'registry/clusters.json');this.iconDirectory=resolve(this.directory,'icons');
+    this.generation=0;this.filesSignature='';this.manifest=null;this.entries=new Map();this.hashes=new Map();this.overrides={};this.customClusters=[];this.clusters=[...SYSTEM_CLUSTERS];this.loadError=null;this.reload();
   }
   reload(force=false) {
-    const fingerprint=signature(this.file)+'|'+signature(this.overridesFile);
+    const fingerprint=signature(this.file)+'|'+signature(this.overridesFile)+'|'+signature(this.clustersFile);
     if(!force && fingerprint===this.filesSignature)return false;
-    let manifest=null,overrides={};
-    try {if(existsSync(this.file))manifest=validateRegistry(JSON.parse(readFileSync(this.file,'utf8')));if(existsSync(this.overridesFile))overrides=JSON.parse(readFileSync(this.overridesFile,'utf8'));if(!overrides || typeof overrides!=='object' || Array.isArray(overrides))throw new Error('Invalid overrides');}
+    let manifest=null,overrides={},customClusters=[];
+    try {if(existsSync(this.file))manifest=validateRegistry(JSON.parse(readFileSync(this.file,'utf8')));if(existsSync(this.overridesFile))overrides=JSON.parse(readFileSync(this.overridesFile,'utf8'));if(!overrides || typeof overrides!=='object' || Array.isArray(overrides))throw new Error('Invalid overrides');if(existsSync(this.clustersFile))customClusters=JSON.parse(readFileSync(this.clustersFile,'utf8'));if(!Array.isArray(customClusters) || customClusters.length>100 || customClusters.some(value=>!/^custom-[a-f0-9-]{36}$/.test(value?.id) || !validString(value.name,80) || !value.name.trim()) || new Set(customClusters.map(value=>value.id)).size!==customClusters.length)throw new Error('Invalid clusters');customClusters=customClusters.map(value=>({id:value.id,name:value.name,system:false,categories:[{id:'items',name:'Предметы'}]}));}
     catch(error){this.loadError=error.code || 'REGISTRY_LOAD_FAILED';this.filesSignature=fingerprint;this.generation++;return true;}
-    this.manifest=manifest;this.overrides=overrides;this.entries=new Map();this.hashes=new Map();this.loadError=null;
+    this.manifest=manifest;this.overrides=overrides;this.customClusters=customClusters;this.clusters=[...SYSTEM_CLUSTERS,...customClusters];this.entries=new Map();this.hashes=new Map();this.loadError=null;
     for(const entry of manifest?.items || []) {
-      const override=overrides[entry.prefab];
+      const override=Object.hasOwn(overrides,entry.prefab)?overrides[entry.prefab]:undefined;
       const item={...entry,...(CATEGORIES.includes(override?.category)?{category:override.category,subcategory:nameOrEmpty(override.subcategory),categoryOverridden:true}:{})};
       const iconAvailable=!!item.iconKey && isFile(resolve(this.iconDirectory,item.iconKey+'.png'));
       item.iconUrl=iconAvailable?'/api/icons/'+item.iconKey+'.png':null;
@@ -117,6 +118,12 @@ export class ItemRegistry {
       if(item.categoryOverridden)item.diagnostics=item.diagnostics.filter(value=>value!=='CATEGORY UNRESOLVED');
       this.entries.set(item.prefab,item);
       const matches=this.hashes.get(item.prefabHash) || [];matches.push(item);this.hashes.set(item.prefabHash,matches);
+    }
+    for(const item of this.entries.values()) {
+      const hashAlias='hash:'+item.prefabHash;
+      const override=Object.hasOwn(overrides,item.prefab)?overrides[item.prefab]:(this.hashes.get(item.prefabHash)?.length===1 && Object.hasOwn(overrides,hashAlias)?overrides[hashAlias]:undefined);
+      Object.assign(item,classifyItem(item,override,this.clusters));
+      if(item.clusterId==='unclassified')item.diagnostics.push('CLUSTER UNRESOLVED');
     }
     for(const matches of this.hashes.values())if(matches.length>1)for(const item of matches)item.diagnostics=[...new Set([...item.diagnostics,'HASH COLLISION'])];
     this.filesSignature=fingerprint;this.generation++;return true;
@@ -130,21 +137,48 @@ export class ItemRegistry {
   describe(item) {
     const definition=this.resolve(item.prefab),prefab=definition?.prefab || item.prefab;
     const hashCollision=/^hash:/.test(prefab) && (this.hashes.get(Number(prefab.slice(5)))?.length || 0)>1;
-    const nameRu=definition?.nameRu || RUSSIAN_ITEM_NAMES[prefab] || item.name || prefab;
-    const nameEn=definition?.nameEn || item.name || prefab;
-    return {...item,...(definition || {}),id:definition?.id || 'prefab:'+prefab,prefab,name:nameRu,nameRu,nameEn,category:definition?.category || 'Неопознанные',subcategory:definition?.subcategory || '',iconUrl:definition?.iconUrl || null,maxStack:definition?.maxStack || null,diagnostics:definition?.diagnostics || ['UNKNOWN ITEM',...(hashCollision?['HASH COLLISION']:[])],registryKnown:!!definition,sourceIds:[...new Set([...(item.sourceIds || []),item.prefab])],searchText:[prefab,definition?.id || 'prefab:'+prefab,nameRu,nameEn,definition?.prefabHash,item.prefab].filter(value=>value!==undefined).join(' ').toLowerCase()};
+    const translated=value=>typeof value==='string' && value.trim() && !value.startsWith('$')?value:null;
+    const nameRu=definition?(translated(definition.nameRu) || RUSSIAN_ITEM_NAMES[prefab] || translated(definition.nameEn) || prefab):(RUSSIAN_ITEM_NAMES[prefab] || item.name || prefab);
+    const nameEn=definition?(translated(definition.nameEn) || prefab):(item.name || prefab);
+    const override=Object.hasOwn(this.overrides,prefab)?this.overrides[prefab]:undefined;
+    const classification=definition || classifyItem(item,override,this.clusters,{known:false});
+    return {...item,...(definition || {}),id:definition?.id || 'prefab:'+prefab,prefab,name:nameRu,nameRu,nameEn,category:definition?.category || (CATEGORIES.includes(override?.category)?override.category:'Неопознанные'),subcategory:definition?.subcategory || override?.subcategory || '',clusterId:classification.clusterId,clusterName:classification.clusterName,clusterCategoryId:classification.clusterCategoryId,clusterCategory:classification.clusterCategory,classificationSource:classification.classificationSource,tags:classification.tags,iconUrl:definition?.iconUrl || null,maxStack:definition?.maxStack || null,diagnostics:definition?.diagnostics || ['UNKNOWN ITEM',...(hashCollision?['HASH COLLISION']:[]),...(classification.clusterId==='unclassified'?['CLUSTER UNRESOLVED']:[])],registryKnown:!!definition,sourceIds:[...new Set([...(item.sourceIds || []),item.prefab])],searchText:[prefab,definition?.id || 'prefab:'+prefab,nameRu,nameEn,definition?.prefabHash,item.prefab,classification.clusterName,classification.clusterCategory,...classification.tags].filter(value=>value!==undefined).join(' ').toLowerCase()};
   }
   summary() {
     const entries=[...this.entries.values()],coverage=this.manifest?.coverage;
-    return {registered:entries.length,definitionsFound:coverage?.definitionsFound || 0,coveragePercent:coverage?.definitionsFound?Math.round(entries.length/coverage.definitionsFound*10000)/100:null,scope:coverage?.scope || 'unavailable',runtimeVerified:coverage?.runtimeVerified || false,iconsFound:entries.filter(item=>item.iconUrl).length,missingIcons:entries.filter(item=>!item.iconUrl).length,missingLocalization:entries.filter(item=>item.diagnostics.includes('MISSING LOCALIZATION')).length,unresolvedCategories:entries.filter(item=>item.diagnostics.includes('CATEGORY UNRESOLVED')).length,hashCollisions:[...this.hashes.values()].filter(items=>items.length>1).length,loadError:this.loadError,generation:this.generation,gameVersion:this.manifest?.gameVersion || null};
+    return {registered:entries.length,definitionsFound:coverage?.definitionsFound || 0,coveragePercent:coverage?.definitionsFound?Math.round(entries.length/coverage.definitionsFound*10000)/100:null,scope:coverage?.scope || 'unavailable',runtimeVerified:coverage?.runtimeVerified || false,iconsFound:entries.filter(item=>item.iconUrl).length,missingIcons:entries.filter(item=>!item.iconUrl).length,missingLocalization:entries.filter(item=>item.diagnostics.includes('MISSING LOCALIZATION')).length,unresolvedCategories:entries.filter(item=>item.diagnostics.includes('CATEGORY UNRESOLVED')).length,unclassifiedItems:entries.filter(item=>item.clusterId==='unclassified').length,classifiedItems:entries.filter(item=>item.clusterId!=='unclassified').length,manualClassifications:entries.filter(item=>item.classificationSource==='manual').length,hashCollisions:[...this.hashes.values()].filter(items=>items.length>1).length,loadError:this.loadError,generation:this.generation,gameVersion:this.manifest?.gameVersion || null};
   }
-  state() {return {...(this.manifest || {schemaVersion:1,gameVersion:null,source:null,generatedAt:null,coverage:{definitionsFound:0,registered:0,scope:'unavailable',runtimeVerified:false}}),items:[...this.entries.values()],summary:this.summary(),categories:CATEGORIES};}
+  state() {return {...(this.manifest || {schemaVersion:1,gameVersion:null,source:null,generatedAt:null,coverage:{definitionsFound:0,registered:0,scope:'unavailable',runtimeVerified:false}}),items:[...this.entries.values()],summary:this.summary(),categories:CATEGORIES,clusters:this.clusters};}
   publish(value) {const manifest=validateRegistry(value);atomicJson(this.file,manifest);this.reload(true);return this.summary();}
   override(value) {
-    if(!value || !validString(value.prefab,200) || !this.entries.has(value.prefab))fail('Prefab не найден в реестре.','ITEM_NOT_FOUND',404);
-    if(value.category!==null && !CATEGORIES.includes(value.category))fail('Категория не поддерживается.');
+    this.reload();
+    if(!value || !validString(value.prefab,200) || !value.prefab.trim())fail('Недопустимый prefab.');
+    if(value.reset!==undefined && typeof value.reset!=='boolean')fail('reset: ожидается boolean.');
+    const reset=value.reset===true || value.category===null;
+    if(value.category!==undefined && value.category!==null && !CATEGORIES.includes(value.category))fail('Категория не поддерживается.');
     if(value.subcategory!==undefined && !validString(value.subcategory,240))fail('Недопустимая подкатегория.');
-    const overrides=Object.assign(Object.create(null),this.overrides);if(value.category===null)delete overrides[value.prefab];else overrides[value.prefab]={category:value.category,subcategory:value.subcategory || ''};atomicJson(this.overridesFile,overrides);this.reload(true);return this.resolve(value.prefab);
+    const target=value.clusterId===undefined?null:this.clusters.find(cluster=>cluster.id===value.clusterId);
+    if(!reset && value.clusterId!==undefined && (!target || !target.categories.some(category=>category.id===value.clusterCategoryId)))fail('Кластер или категория не поддерживается.','INVALID_CLUSTER');
+    if(!reset && value.clusterId===undefined && value.category===undefined)fail('Не задано переопределение.');
+    const canonical=this.resolve(value.prefab)?.prefab || value.prefab,overrides=Object.assign(Object.create(null),this.overrides);
+    if(reset) {delete overrides[canonical];if(canonical!==value.prefab)delete overrides[value.prefab];const definition=this.resolve(canonical);if(definition && this.hashes.get(definition.prefabHash)?.length===1)delete overrides['hash:'+definition.prefabHash];}
+    else overrides[canonical]={...(Object.hasOwn(overrides,canonical)?overrides[canonical]:{}),...(value.category!==undefined?{category:value.category,subcategory:value.subcategory || ''}:{}),...(target?{clusterId:target.id,clusterCategoryId:value.clusterCategoryId}:{})};
+    atomicJson(this.overridesFile,overrides);this.reload(true);return this.resolve(canonical) || this.describe({prefab:canonical,name:canonical});
+  }
+  createCluster(value) {
+    this.reload();const name=value?.name;
+    if(!validString(name,80) || !name.trim())fail('Название кластера: от 1 до 80 символов.');
+    if(this.customClusters.length>=100)fail('Достигнут предел 100 пользовательских кластеров.');
+    if(this.clusters.some(cluster=>cluster.name.toLocaleLowerCase('ru')===name.trim().toLocaleLowerCase('ru')))fail('Кластер с таким названием уже существует.','CLUSTER_EXISTS',409);
+    const cluster={id:'custom-'+randomUUID(),name:name.trim(),system:false,categories:[{id:'items',name:'Предметы'}]};atomicJson(this.clustersFile,[...this.customClusters,cluster]);this.reload(true);return cluster;
+  }
+  renameCluster(id,value) {
+    this.reload();const target=this.clusters.find(cluster=>cluster.id===id);
+    if(!target)fail('Кластер не найден.','CLUSTER_NOT_FOUND',404);
+    if(target.system)fail('Системный кластер нельзя переименовать.','SYSTEM_CLUSTER',403);
+    const name=value?.name;if(!validString(name,80) || !name.trim())fail('Название кластера: от 1 до 80 символов.');
+    if(this.clusters.some(cluster=>cluster.id!==id && cluster.name.toLocaleLowerCase('ru')===name.trim().toLocaleLowerCase('ru')))fail('Кластер с таким названием уже существует.','CLUSTER_EXISTS',409);
+    atomicJson(this.clustersFile,this.customClusters.map(cluster=>cluster.id===id?{...cluster,name:name.trim()}:cluster));this.reload(true);return this.clusters.find(cluster=>cluster.id===id);
   }
   iconFile(key) {if(typeof key!=='string' || !ICON_KEY.test(key))return null;const file=resolve(this.iconDirectory,key+'.png');return isFile(file)?file:null;}
   publishIcon(key,bytes) {

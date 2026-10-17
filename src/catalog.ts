@@ -4,7 +4,7 @@ export const itemCategories=['Древесина и растения','Каме�
 export type SortColumn='name'|'quantity'|'shortage'|'available'|'reserved'|'containers'|'zone'|'status'|'category';
 export const itemKey=(item:Pick<Item,'id'|'prefab'>)=>item.id||item.prefab;
 export const sameItem=(a:Pick<Item,'id'|'prefab'>,b:Pick<Item,'id'|'prefab'>)=>a.id&&b.id?a.id===b.id:a.prefab===b.prefab;
-export const itemMatches=(item:Item,query:string)=>!query.trim()||[item.name,item.nameRu,item.nameEn,item.prefab,item.id,item.prefabHash,item.searchText,item.category,item.subcategory].filter(value=>value!==undefined&&value!==null).join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'));
+export const itemMatches=(item:Item,query:string)=>!query.trim()||[item.name,item.nameRu,item.nameEn,item.prefab,item.id,item.prefabHash,item.searchText,item.category,item.subcategory,item.clusterName,item.clusterCategory,...(item.tags||[])].filter(value=>value!==undefined&&value!==null).join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'));
 export const resourceZones=(resource:Resource,state:State)=>{
  const ids=new Set(state.containers.filter(c=>resource.containerIds.includes(c.id)).flatMap(c=>c.zoneIds));
  return state.zones.filter(z=>ids.has(z.id)).map(z=>z.name).sort((a,b)=>a.localeCompare(b,'ru')).join(', ')||'Вне зон';

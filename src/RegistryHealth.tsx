@@ -16,7 +16,10 @@ export function RegistryHealth({state}:{state:State}){
   <div><dt>Настоящих пиктограмм доступно</dt><dd>{number('iconsFound')}</dd></div>
   <div><dt>Без пиктограммы</dt><dd>{number('missingIcons')}</dd></div>
   <div><dt>Неполная локализация RU / EN</dt><dd>{number('missingLocalization')}</dd></div>
-  <div><dt>Неопределённая категория</dt><dd>{number('unresolvedCategories')}</dd></div>
+  <div><dt>Классифицировано по кластерам</dt><dd>{number('classifiedItems')}</dd></div>
+  <div><dt>В «Неразобранном» в каталоге</dt><dd>{number('unclassifiedItems')}</dd></div>
+  <div><dt>Ручных назначений в каталоге</dt><dd>{number('manualClassifications')}</dd></div>
+  <div><dt>Старая категория «Прочее»</dt><dd>{number('unresolvedCategories')}</dd></div>
   <div><dt>Неопознанных позиций в запасах</dt><dd className={unknown?'text-amber':''}>{unknown}</dd></div>
   <div><dt>Переиндексация</dt><dd>{registry.reindexRequested?'Запрошена; ожидается источник':'Нет ожидающего запроса'}</dd></div>
  </dl><div className={`registry-verification ${registry.runtimeVerified?'verified':''}`}>{registry.runtimeVerified?<><Database size={15}/><span>Реестр ObjectDB подтверждён игровым источником.</span></>:<><TriangleAlert size={15}/><span>{registered?'Индекс установленной игры загружен. ':''}Полнота текущего ObjectDB и предметов модов не подтверждена запуском плагина.</span></>}</div>

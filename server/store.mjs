@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { RUSSIAN_ITEM_NAMES } from './catalog.mjs';
 import { categoryFor, ItemRegistry } from './registry.mjs';
+import { summarizeClusters } from './clusters.mjs';
 export { categoryFor } from './registry.mjs';
 
 export const HEARTBEAT_TIMEOUT_MS = 12_000;
@@ -124,7 +125,7 @@ export class InventoryStore {
     const worlds = this.db.prepare('SELECT id,name FROM worlds ORDER BY rowid').all();
     const selected = worldId ? worlds.find(world=>world.id===worldId) : worlds[0];
     if (worldId && !selected) throw new ApiError(404, 'Мир не найден.', 'WORLD_NOT_FOUND');
-    const empty = { demo:this.demo,worlds,world:selected || null,registry:{...this.registry.summary(),inventoryUnknownItems:0,reindexRequested:false},reservationsImplemented:false,source:{connected:false,mode:null,coverage:'partial',scope:'UNKNOWN',lastSeenAt:null,lastConfirmedAt:null,gameVersion:null},containers:[],resources:[],zones:[],minimums:{},events:[],stats:{totalItems:0,uniqueItems:0,containers:0,shortages:0},revision:this.revision };
+    const empty = { demo:this.demo,worlds,world:selected || null,registry:{...this.registry.summary(),inventoryUnknownItems:0,reindexRequested:false},clusters:this.registry.clusters,clusterStats:summarizeClusters([],this.registry.clusters),reservationsImplemented:false,source:{connected:false,mode:null,coverage:'partial',scope:'UNKNOWN',lastSeenAt:null,lastConfirmedAt:null,gameVersion:null},containers:[],resources:[],zones:[],minimums:{},events:[],stats:{totalItems:0,uniqueItems:0,containers:0,shortages:0},revision:this.revision };
     if (!selected) return empty;
     const now = this.now();
     const rawSources = this.db.prepare('SELECT * FROM sources WHERE world_id=? ORDER BY last_seen DESC').all(selected.id);
@@ -144,11 +145,13 @@ export class InventoryStore {
     const byPrefab = new Map();
     for (const container of containers) for (const item of container.items) {
       let resource = byPrefab.get(item.prefab);
-      if (!resource) { resource = {...item,variants:[],quantity:0,containerIds:[],minimum:minimums[item.prefab]||0,status:container.status}; byPrefab.set(item.prefab,resource); }
+      if (!resource) { resource = {...item,variants:[],quantity:0,containerIds:[],statusCounts:{},statusContainerIds:{},minimum:minimums[item.prefab]||0,status:container.status}; byPrefab.set(item.prefab,resource); }
       resource.quantity += item.quantity;
       resource.variants.push(...item.variants);
       resource.sourceIds=[...new Set([...resource.sourceIds,...item.sourceIds])];
       resource.containerIds.push(container.id);
+      resource.statusCounts[container.status]=(resource.statusCounts[container.status] || 0)+1;
+      (resource.statusContainerIds[container.status] ||= []).push(container.id);
       if (statusRank[container.status]>statusRank[resource.status]) resource.status = container.status;
     }
     for (const [prefab,minimum] of Object.entries(minimums)) if (!byPrefab.has(prefab) && minimum>0) byPrefab.set(prefab,{...this.registry.describe({prefab,name:RUSSIAN_ITEM_NAMES[prefab] || prefab}),quantity:0,variants:[],containerIds:[],minimum,status:preferred && connected(preferred) ? 'STALE' : 'OFFLINE'});
@@ -156,7 +159,7 @@ export class InventoryStore {
     empty.registry.inventoryUnknownItems=resources.filter(resource=>!resource.registryKnown).length;
     empty.registry.reindexRequested=empty.registry.inventoryUnknownItems>0;
     const lastConfirmed=this.db.prepare('SELECT MAX(observed_at) AS confirmed FROM containers WHERE world_id=? AND destroyed=0').get(selected.id).confirmed;
-    return {...empty,source:preferred ? {connected:connected(preferred),mode:preferred.mode,coverage:preferred.coverage,scope:preferred.coverage==='authoritative' ? 'authoritative' : 'partial',lastSeenAt:iso(preferred.last_seen),lastConfirmedAt:lastConfirmed===null?null:iso(lastConfirmed),gameVersion:preferred.game_version} : empty.source,containers,resources,zones,minimums,events:this.db.prepare('SELECT id,at,text FROM events WHERE world_id=? ORDER BY id DESC LIMIT 60').all(selected.id).map(event=>({...event,at:iso(event.at)})),stats:{totalItems:resources.reduce((sum,resource)=>sum+resource.quantity,0),uniqueItems:resources.filter(resource=>resource.quantity>0).length,containers:containers.length,shortages:resources.filter(resource=>resource.quantity<resource.minimum).length}};
+    return {...empty,clusterStats:summarizeClusters(resources,this.registry.clusters),source:preferred ? {connected:connected(preferred),mode:preferred.mode,coverage:preferred.coverage,scope:preferred.coverage==='authoritative' ? 'authoritative' : 'partial',lastSeenAt:iso(preferred.last_seen),lastConfirmedAt:lastConfirmed===null?null:iso(lastConfirmed),gameVersion:preferred.game_version} : empty.source,containers,resources,zones,minimums,events:this.db.prepare('SELECT id,at,text FROM events WHERE world_id=? ORDER BY id DESC LIMIT 60').all(selected.id).map(event=>({...event,at:iso(event.at)})),stats:{totalItems:resources.reduce((sum,resource)=>sum+resource.quantity,0),uniqueItems:resources.filter(resource=>resource.quantity>0).length,containers:containers.length,shortages:resources.filter(resource=>resource.quantity<resource.minimum).length}};
   }
   label(worldId,id,label) {
     this.requireWorld(worldId);

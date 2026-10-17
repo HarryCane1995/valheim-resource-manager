@@ -55,12 +55,12 @@ async page => {
   await page.getByLabel('Высота строки').selectOption('30');
   check('density control',Math.round(await row.evaluate(el=>el.getBoundingClientRect().height))===30);
   await page.getByLabel('Высота строки').selectOption('32');
-  await page.getByLabel('По категориям',{exact:true}).check();
+  await page.getByLabel('Группировка').selectOption('categories');
   check('category grouping',await page.locator('.compact-category-row').count()>0);
-  await page.getByRole('button',{name:'Свернуть все',exact:true}).click();
+  await page.getByRole('button',{name:'Свернуть всё',exact:true}).click();
   check('collapse categories',await page.getByTestId('compact-resource-row').count()===0);
-  await page.getByRole('button',{name:'Развернуть все',exact:true}).click();
-  await page.getByLabel('По категориям',{exact:true}).uncheck();
+  await page.getByRole('button',{name:'Развернуть всё',exact:true}).click();
+  await page.getByLabel('Группировка').selectOption('none');
   const realBefore=await page.evaluate(async()=>{const state=await(await fetch('/api/state')).json();return state.resources.reduce((sum,r)=>sum+r.quantity,0);});
   await page.getByRole('button',{name:'Демо-режим',exact:true}).click();
   await page.locator('.demo-banner').waitFor({state:'visible'});

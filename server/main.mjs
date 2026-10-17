@@ -34,11 +34,14 @@ export function createApp({dataDir=resolve(ROOT,'data'),localDataDir=dataDir===r
       if(demoFlag!==null && !['0','1'].includes(demoFlag)) throw new ApiError(400,'demo: ожидается 0 или 1.');
       const store=demoFlag==='1'?demo:real;
       const selection={worldId:url.searchParams.get('worldId')||undefined,zoneId:url.searchParams.get('zoneId')||'all'};
-      if(req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,service:'VALHEIM RESOURCE MANAGER',version:'0.2.0',localOnly:true});
+      if(req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,service:'VALHEIM RESOURCE MANAGER',version:'0.3.0',localOnly:true});
       if(req.method==='GET' && url.pathname==='/api/state') return json(res,200,store.state(selection));
       if(req.method==='GET' && url.pathname==='/api/registry') {registry.reload();return json(res,200,registry.state());}
       if(req.method==='POST' && url.pathname==='/api/registry') {authorizeSource(req);const summary=registry.publish(await body(req));notify(real);notify(demo);return json(res,200,{ok:true,summary});}
       if(req.method==='PUT' && url.pathname==='/api/registry/overrides') {const item=registry.override(await body(req));notify(real);notify(demo);return json(res,200,{ok:true,item,summary:registry.summary()});}
+      if(req.method==='POST' && url.pathname==='/api/clusters') {const cluster=registry.createCluster(await body(req));notify(real);notify(demo);return json(res,201,{ok:true,cluster,clusters:registry.clusters});}
+      const clusterMatch=/^\/api\/clusters\/([^/]+)$/.exec(url.pathname);
+      if(req.method==='PUT' && clusterMatch) {const cluster=registry.renameCluster(decodeURIComponent(clusterMatch[1]),await body(req));notify(real);notify(demo);return json(res,200,{ok:true,cluster,clusters:registry.clusters});}
       const iconMatch=/^\/api\/icons\/([a-f0-9]{64})\.png$/.exec(url.pathname);
       if(iconMatch && req.method==='POST') {authorizeSource(req);if(!/^image\/png(?:\s*;|$)/i.test(req.headers['content-type'] || ''))throw new ApiError(415,'Требуется Content-Type: image/png.','CONTENT_TYPE');const icon=registry.publishIcon(iconMatch[1],await bytes(req,512*1024));notify(real);notify(demo);return json(res,200,{ok:true,...icon});}
       if(iconMatch && ['GET','HEAD'].includes(req.method)) {const file=registry.iconFile(iconMatch[1]);if(!file)throw new ApiError(404,'Пиктограмма не найдена.','ICON_NOT_FOUND');const stat=statSync(file);res.statusCode=200;res.setHeader('Content-Type','image/png');res.setHeader('Content-Length',stat.size);res.setHeader('Cache-Control','private, max-age=31536000, immutable');if(req.method==='HEAD')res.end();else createReadStream(file).on('error',()=>res.destroy()).pipe(res);return;}
