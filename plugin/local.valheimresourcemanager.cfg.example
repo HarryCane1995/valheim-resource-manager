@@ -1,0 +1,8 @@
+[Connection]
+Endpoint = http://127.0.0.1:37841/api/ingest
+Token = REPLACE_WITH_LOCAL_BACKEND_TOKEN
+SourceId =
+
+[Indexing]
+Enabled = true
+ScanHostPersistedZdos = true
