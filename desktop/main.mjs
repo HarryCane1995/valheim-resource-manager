@@ -212,7 +212,7 @@ else {
   });
   app.whenReady().then(async () => {
     await prepareIntegration();
-    backend = await startBackend({ ...paths, distDir: join(ROOT, 'dist'), port: PORT, createApp });
+    backend = await startBackend({ ...paths, distDir: join(ROOT, 'dist'), port: PORT, createApp: options=>createApp({...options,gameDirectory:()=>PORT===37841?gameDirectory:null}) });
     sourceConfig = readJSON(configFile);
     if (typeof sourceConfig?.worldFolder !== 'string' || typeof sourceConfig?.worldId !== 'string') sourceConfig = null;
     checkpoint = readJSON(checkpointFile) || {};
