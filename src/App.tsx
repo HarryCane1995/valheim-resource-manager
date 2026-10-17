@@ -11,6 +11,7 @@ import { CompactCatalog } from './CompactCatalog';
 import { ClusterOverview } from './ClusterOverview';
 import { ClusterManager } from './ClusterManager';
 import { HostBedAreaBanner, HostBedAreaEmpty } from './HostBedArea';
+import { DesktopControls, DesktopWorld } from './DesktopControls';
 import { summarizeResources } from './clusters';
 import { itemCategories, itemKey, itemMatches, readPreference, savePreference, sortResources, SortColumn } from './catalog';
 
@@ -37,6 +38,9 @@ export default function App(){
  const [mode,setMode]=useState<DisplayMode>(()=>readPreference('vrm.displayMode','normal',(v):v is DisplayMode=>v==='normal'||v==='compact'));
  const [focusMode,setFocusMode]=useState(()=>readPreference('vrm.focusMode',false,(v):v is boolean=>typeof v==='boolean'));
  const [sortDirection,setSortDirection]=useState<'asc'|'desc'>('desc');
+ const [autoWorldId,setAutoWorldId]=useState('');
+ const desktopAvailable=Boolean(window.vrmDesktop);
+ const effectiveWorldId=worldId||(!demo&&desktopAvailable?autoWorldId:'');
  useEffect(()=>savePreference('vrm.query',query),[query]);
  useEffect(()=>savePreference('vrm.normalView',view),[view]);
  useEffect(()=>savePreference('vrm.clusterFilter',clusterId),[clusterId]);
@@ -46,33 +50,43 @@ export default function App(){
  const switchMode=(next:DisplayMode)=>{modeScroll.current[mode]=window.scrollY;setMode(next);savePreference('vrm.displayMode',next);};
  useLayoutEffect(()=>{window.scrollTo({top:modeScroll.current[mode],behavior:'auto'});},[mode]);
  const changeSort=(next:Sort)=>{setSortDirection(current=>next===sort?(current==='asc'?'desc':'asc'):['name','zone','status','category'].includes(next)?'asc':'desc');setSort(next);};
- const scopeKey=JSON.stringify([demo,worldId,zoneId]);
+ const scopeKey=JSON.stringify([demo,effectiveWorldId,zoneId]);
  const activeScope=useRef(scopeKey),readGeneration=useRef(0),readController=useRef<AbortController|null>(null);
  const changeScope=(nextDemo:boolean,nextWorldId:string,nextZoneId:string)=>{
   // Invalidate synchronously, before React commits the new scope or any old read can settle.
-  activeScope.current=JSON.stringify([nextDemo,nextWorldId,nextZoneId]);
+  const nextEffectiveWorldId=nextWorldId||(!nextDemo&&desktopAvailable?autoWorldId:'');
+  activeScope.current=JSON.stringify([nextDemo,nextEffectiveWorldId,nextZoneId]);
   readGeneration.current++;readController.current?.abort();readController.current=null;
   setState(emptyState);setApiAvailable(null);setSelected(null);
   setDemo(nextDemo);setWorldId(nextWorldId);setZoneId(nextZoneId);
  };
+ const followActiveWorld=useCallback((world:DesktopWorld|null)=>{
+  // Keep the last known world available after the game closes. Explicit world choices stay fixed.
+  if(!world?.id||world.id===autoWorldId)return;
+  setAutoWorldId(world.id);
+  if(demo||worldId)return;
+  activeScope.current=JSON.stringify([false,world.id,'all']);
+  readGeneration.current++;readController.current?.abort();readController.current=null;
+  setState(emptyState);setApiAvailable(null);setSelected(null);setZoneEditor(undefined);setZoneId('all');
+ },[autoWorldId,demo,worldId]);
  const report=useCallback((s:string)=>{setToast(s);},[]);
  useEffect(()=>{if(!toast)return;const timer=setTimeout(()=>setToast(''),6000);return()=>clearTimeout(timer);},[toast]);
  const refresh=useCallback(async()=>{
-  const requestScope=JSON.stringify([demo,worldId,zoneId]);
+  const requestScope=JSON.stringify([demo,effectiveWorldId,zoneId]);
   // Old socket and mutation callbacks may still exist briefly after a scope switch.
   if(activeScope.current!==requestScope)return;
   const generation=++readGeneration.current;
   readController.current?.abort();const controller=new AbortController();readController.current=controller;
   const current=()=>!controller.signal.aborted&&generation===readGeneration.current&&activeScope.current===requestScope;
   try {
-   const params=new URLSearchParams({demo:demo?'1':'0',zoneId});if(worldId)params.set('worldId',worldId);
+   const params=new URLSearchParams({demo:demo?'1':'0',zoneId});if(effectiveWorldId)params.set('worldId',effectiveWorldId);
    const response=await fetch(`/api/state?${params}`,{signal:controller.signal});
    if(!response.ok)throw Error('Backend недоступен');const next=await response.json();
    if(!current())return;
    setState({...emptyState,...next,source:{...emptyState.source,...next.source}});setApiAvailable(true);
   }catch{if(current())setApiAvailable(false);}
   finally{if(readController.current===controller)readController.current=null;}
- },[demo,worldId,zoneId]);
+ },[demo,effectiveWorldId,zoneId]);
  useEffect(()=>()=>{readGeneration.current++;readController.current?.abort();},[]);
  useEffect(()=>{refresh();const timer=setInterval(refresh,5000);return()=>clearInterval(timer);},[refresh]);
  useEffect(()=>{let socket:WebSocket|undefined;let retry:ReturnType<typeof setTimeout>;let stopped=false;const connect=()=>{socket=new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/ws`);socket.onmessage=e=>{try{const msg=JSON.parse(e.data);if(msg.type==='state-changed'&&(msg.demo===undefined||Boolean(msg.demo)===demo))refresh();}catch{}};socket.onclose=()=>{if(!stopped)retry=setTimeout(connect,3000);};socket.onerror=()=>socket?.close();};connect();return()=>{stopped=true;clearTimeout(retry);socket?.close();};},[demo,refresh]);
@@ -110,11 +124,12 @@ export default function App(){
  <div className="workspace">
  <header className="topbar">
   <button className="icon-button mobile-menu" onClick={()=>setMenu(!menu)} aria-label="Открыть меню"><Menu size={20}/></button>
-  <div className="world-control"><span className="world-icon"><Layers3 size={19}/></span><div><label htmlFor="world-select">МИР VALHEIM</label><div className="select-wrap"><select id="world-select" value={worldId||state.world?.id||''} onChange={e=>changeScope(demo,e.target.value,'all')} aria-label="Выберите мир">{!state.worlds.length&&<option value="">Мир не подключён</option>}{state.worlds.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select><ChevronDown size={13}/></div></div></div>
+  <div className="world-control"><span className="world-icon"><Layers3 size={19}/></span><div><label htmlFor="world-select">МИР VALHEIM</label><div className="select-wrap"><select id="world-select" value={desktopAvailable&&!demo?worldId:worldId||state.world?.id||''} onChange={e=>changeScope(demo,e.target.value,'all')} aria-label="Выберите мир">{desktopAvailable&&!demo?<option value="">Авто: активный мир</option>:!state.worlds.length&&<option value="">Мир не подключён</option>}{state.worlds.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select><ChevronDown size={13}/></div></div></div>
   <div className="topbar-divider"/>
   <div className={`connection-label ${realSourceConnected?'connected':snapshotSource?'snapshot-connection':''}`}><span className="connection-dot"/><span>{realSourceConnected?(demo?'Демо-источник активен':'Связь с игрой установлена'):snapshotSource?'Снимок сохранения':'Игра пока не подключена'}</span></div>
    <div className="topbar-right"><div className="mode-switch" role="group" aria-label="Режим интерфейса"><button data-testid="mode-normal" aria-pressed={mode==='normal'} onClick={()=>switchMode('normal')}>NORMAL</button><button data-testid="mode-compact" aria-pressed={mode==='compact'} onClick={()=>switchMode('compact')}>COMPACT</button></div><button className={`focus-toggle ${focusMode?'active':''}`} aria-label="Режим второго монитора" title="Скрыть навигацию, заголовок и дополнительные панели" aria-pressed={focusMode} onClick={()=>{setFocusMode(!focusMode);savePreference('vrm.focusMode',!focusMode);}}><Layers3 size={14}/><span>Фокус</span></button><button className={`demo-toggle ${demo?'active':''}`} disabled={busy} onClick={toggleDemo}><FlaskConical size={15}/>{demo?'Выйти из демо':'Демо-режим'}</button><button className="icon-button help-top" title="Помощь и подключение" onClick={()=>setHelp(true)}><CircleHelp size={19}/></button></div>
  </header>
+ <DesktopControls onActiveWorld={followActiveWorld}/>
  {demo&&<div className="demo-banner"><FlaskConical size={16}/><strong>ДЕМО</strong><span>Синтетические данные — не игровые остатки</span><div className="demo-controls"><button disabled={busy} onClick={()=>mutate('/api/demo/step','POST',{action:'add40'})}><Plus size={13}/>40 дерева</button><button disabled={busy} onClick={()=>mutate('/api/demo/step','POST',{action:'move'})}>Переложить</button><button disabled={busy} onClick={()=>mutate('/api/demo/step','POST',{action:state.source.connected?'disconnect':'reconnect'})}>{state.source.connected?'Отключить источник':'Восстановить связь'}</button></div></div>}
  <main className="main-content">
   <section className="page-heading"><div><div className="eyebrow"><span/> ОБЗОР ВАШЕЙ БАЗЫ</div><h1>{titles[page]}</h1><p>{subtitles[page]}</p></div><div className="heading-actions"><div className="zone-select"><MapPin size={16}/><select aria-label="Складская зона" value={zoneId} onChange={e=>changeScope(demo,worldId,e.target.value)}><option value="all">Все зоны</option>{state.zones.filter(z=>z.enabled).map(z=><option key={z.id} value={z.id}>{z.name}</option>)}</select><ChevronDown size={14}/></div><button className={`icon-button refresh-button ${refreshing?'spinning':''}`} title="Обновить данные" onClick={async()=>{setRefreshing(true);await refresh();setTimeout(()=>setRefreshing(false),400);}}><RefreshCw size={17}/></button></div></section>
@@ -160,4 +175,4 @@ function ZoneModal({zone,worldId,onSave,onClose,busy}:{zone:Zone|null;worldId:st
 
 function Settings({state,apiAvailable,demo,onHelp,onDemo,busy}:{state:State;apiAvailable:boolean|null;demo:boolean;onHelp:()=>void;onDemo:()=>void;busy:boolean}){return <div className="settings-grid"><section className="settings-card"><span className="settings-icon"><Radio size={24}/></span><h2>Источник данных</h2><p>Состояние игрового процесса и реальный охват инвентаризации.</p><dl><div><dt>Связь с игрой</dt><dd className={state.source.connected?'text-green':''}>{state.source.connected?'Установлена':'Нет подтверждения'}</dd></div><div><dt>Режим</dt><dd>{demo?'Изолированное демо':sourceMode(state.source.mode,state.source.coverage)}</dd></div><div><dt>Охват</dt><dd>{coverageLabel(state.source.coverage)}</dd></div><div><dt>Версия игры у источника</dt><dd>{state.source.gameVersion||'Не передана'}</dd></div><div><dt>Последний контакт</dt><dd>{relative(state.source.lastSeenAt)}</dd></div></dl><button className="button secondary" onClick={onHelp}>Инструкция подключения<ArrowRight size={15}/></button></section><section className="settings-card"><span className="settings-icon"><Database size={24}/></span><h2>Локальный сервер</h2><p>Панель и хранилище работают на вашем компьютере.</p><dl><div><dt>Состояние backend</dt><dd>{apiAvailable?'Работает':apiAvailable===false?'Недоступен':'Проверяем…'}</dd></div><div><dt>Адрес панели</dt><dd className="mono">{location.host}</dd></div><div><dt>Транспорт обновлений</dt><dd>WebSocket + сверка каждые 5 с</dd></div><div><dt>Ревизия данных</dt><dd>{state.revision}</dd></div><div><dt>Изменение игры</dt><dd>Только чтение</dd></div></dl><div className="settings-safe"><ShieldCheck size={17}/>Метки, зоны и пороги сохраняются отдельно от игрового мира.</div></section><section className="settings-card demo-settings"><span className="settings-icon"><FlaskConical size={23}/></span><div><h2>Песочница для проверки</h2><p>Изолированные синтетические данные. Можно проверить поиск, перемещение ресурсов и восстановление связи.</p></div><button className={`button ${demo?'secondary':'primary'}`} onClick={onDemo} disabled={busy}>{demo?'Выйти из демо':'Включить демо'}<ArrowRight size={15}/></button></section></div>;}
 
-function Help({onClose}:{onClose:()=>void}){const helpRef=useRef<HTMLElement>(null);useOutsideDismiss(helpRef,onClose);return <div className="modal-overlay" onClick={onClose}><section ref={helpRef} className="modal help-modal" role="dialog" aria-modal="true" aria-label="Подключение Valheim" onClick={e=>e.stopPropagation()}><div className="modal-heading"><span className="modal-icon"><BookOpen size={23}/></span><button className="icon-button" onClick={onClose} aria-label="Закрыть помощь"><X size={20}/></button></div><div className="eyebrow">НАЧНИТЕ С ПОДКЛЮЧЕНИЯ</div><h2>Ваш мир. Ваши запасы.<br/>Всё перед глазами.</h2><p>Панель получает данные от локального BepInEx-плагина. Игровые сохранения и содержимое сундуков не изменяются.</p><ol className="help-steps"><li><span>01</span><div><h3>Запустите локальную систему</h3><p>Используйте Windows-скрипт запуска из папки проекта. Оставьте backend работающим во время игры.</p></div></li><li><span>02</span><div><h3>Дождитесь обычного запуска Valheim</h3><p>После установки плагин загрузится при следующем запуске игры. Текущую игровую сессию прерывать не нужно.</p></div></li><li><span>03</span><div><h3>Загрузите мир и подойдите к базе</h3><p>Доступные контейнеры появятся автоматически. На удалённом сервере клиент видит только доступные ему области.</p></div></li><li><span>04</span><div><h3>Проверьте первое обновление</h3><p>Положите 40 единиц древесины в сундук и найдите ресурс в поиске. Изменение должно подтвердиться игровым источником.</p></div></li></ol><div className="help-statuses"><Status status="LIVE"/><Status status="STALE"/><Status status="OFFLINE"/><Status status="SNAPSHOT"/></div><p className="help-footnote">LIVE — источник подтвердил состояние. STALE — подтверждение устарело. OFFLINE — связи с источником нет. SNAPSHOT — данные из сохранения. Уход с базы сохраняет последнее известное содержимое.</p><button className="button primary full" onClick={onClose}>Понятно, к ресурсам<ArrowRight size={15}/></button></section></div>;}
+function Help({onClose}:{onClose:()=>void}){const helpRef=useRef<HTMLElement>(null);useOutsideDismiss(helpRef,onClose);return <div className="modal-overlay" onClick={onClose}><section ref={helpRef} className="modal help-modal" role="dialog" aria-modal="true" aria-label="Подключение Valheim" onClick={e=>e.stopPropagation()}><div className="modal-heading"><span className="modal-icon"><BookOpen size={23}/></span><button className="icon-button" onClick={onClose} aria-label="Закрыть помощь"><X size={20}/></button></div><div className="eyebrow">НАЧНИТЕ С ПОДКЛЮЧЕНИЯ</div><h2>Ваш мир. Ваши запасы.<br/>Всё перед глазами.</h2><p>{window.vrmDesktop?'Приложение получает живые данные от BepInEx-плагина или читает снимок выбранного сохранения. Игровые сохранения и содержимое сундуков не изменяются.':'Панель получает данные от локального BepInEx-плагина. Игровые сохранения и содержимое сундуков не изменяются.'}</p><ol className="help-steps"><li><span>01</span><div><h3>{window.vrmDesktop?'Откройте приложение':'Запустите локальную систему'}</h3><p>{window.vrmDesktop?'Локальный узел запускается автоматически. Приложение разворачивается на весь экран кнопкой сверху или клавишей F11.':'Используйте Windows-скрипт запуска из папки проекта. Оставьте backend работающим во время игры.'}</p></div></li><li><span>02</span><div><h3>Дождитесь обычного запуска Valheim</h3><p>После установки плагин загрузится при следующем запуске игры. Текущую игровую сессию прерывать не нужно.</p></div></li><li><span>03</span><div><h3>{window.vrmDesktop?'Откройте мир или выберите сохранение':'Загрузите мир и подойдите к базе'}</h3><p>{window.vrmDesktop?'В режиме «Авто: активный мир» приложение следует за игровым источником. Для снимка нажмите «Выбрать сохранение» и укажите папку мира. На удалённом сервере клиент видит только доступные ему области.':'Доступные контейнеры появятся автоматически. На удалённом сервере клиент видит только доступные ему области.'}</p></div></li><li><span>04</span><div><h3>Проверьте первое обновление</h3><p>{window.vrmDesktop?'При live-подключении переложите ресурс и дождитесь подтверждения игровым источником. Снимок обновляется после сохранения мира; он показывает состояние на момент записи файла.':'Положите 40 единиц древесины в сундук и найдите ресурс в поиске. Изменение должно подтвердиться игровым источником.'}</p></div></li></ol><div className="help-statuses"><Status status="LIVE"/><Status status="STALE"/><Status status="OFFLINE"/><Status status="SNAPSHOT"/></div><p className="help-footnote">LIVE — источник подтвердил состояние. STALE — подтверждение устарело. OFFLINE — связи с источником нет. SNAPSHOT — данные из сохранения. Уход с базы сохраняет последнее известное содержимое.</p><button className="button primary full" onClick={onClose}>Понятно, к ресурсам<ArrowRight size={15}/></button></section></div>;}
