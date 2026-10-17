@@ -16,6 +16,33 @@ const manifest=(items,fields={})=>({schemaVersion:1,gameVersion:'synthetic-test-
 function fixture(t) {const dir=mkdtempSync(join(tmpdir(),'vrm-registry-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));return {dir,registry:new ItemRegistry(dir)};}
 const packet=items=>({sourceId:'synthetic-test',worldId:'test-world',worldName:'SYNTHETIC TEST',sessionId:'test-session',sequence:1,mode:'snapshot',coverage:'partial',gameVersion:'synthetic',containers:[{id:'test:1',type:'chest',name:'SYNTHETIC',x:0,y:0,z:0,observedAt:NOW,items}],destroyedIds:[]});
 
+test('partial runtime upload retains last good icon by exact prefab/build across restart without replaying inventory',t=>{
+ const {dir,registry}=fixture(t),png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8/x8AAwMCAO+jY1sAAAAASUVORK5CYII=','base64'),key=createHash('sha256').update(png).digest('hex'),missing='f'.repeat(64);
+ registry.publishIcon(key,png);registry.publish(manifest([definition('Wood',{iconKey:key})]));
+ const store=new InventoryStore(':memory:',{now:()=>NOW,registry});t.after(()=>store.close());store.ingest(validateIngest(packet([{prefab:'Wood',name:'Wood',quantity:40}])));
+ registry.publish(manifest([definition('Wood',{iconKey:missing,nameRu:'Новое имя'})],{source:{kind:'runtime-objectdb'},coverage:{definitionsFound:1,runtimeVerified:true,itemsWithIcons:1}}));
+ assert.equal(registry.resolve('Wood').iconUrl,'/api/icons/'+key+'.png');assert.equal(registry.resolve('Wood').iconKey,missing);assert.equal(registry.resolve('Wood').iconFallback,true);assert.equal(registry.resolve('Wood').nameRu,'Новое имя');assert.equal(store.state().stats.totalItems,40);
+ assert.equal(new ItemRegistry(dir).resolve('Wood').iconUrl,'/api/icons/'+key+'.png');
+ registry.publish(manifest([definition('Other',{iconKey:missing})]));assert.equal(registry.resolve('Other').iconUrl,null);
+ registry.publish(manifest([definition('Wood',{iconKey:missing})],{gameVersion:'another-build'}));assert.equal(registry.resolve('Wood').iconUrl,null);
+});
+
+test('installed exact prefab icon bootstrap restores missing runtime bytes, preserving runtime metadata and coverage',t=>{
+ const {dir}=fixture(t),png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8/x8AAwMCAO+jY1sAAAAASUVORK5CYII=','base64'),key=createHash('sha256').update(png).digest('hex');
+ mkdirSync(join(dir,'installed-assets/registry'),{recursive:true});mkdirSync(join(dir,'installed-assets/icons'),{recursive:true});writeFileSync(join(dir,'installed-assets/icons',key+'.png'),png);
+ writeFileSync(join(dir,'installed-assets/registry/items.json'),JSON.stringify(manifest([definition('Wood',{iconKey:key,nameRu:'Старое имя'})])));
+ const registry=new ItemRegistry(dir);registry.publish(manifest([definition('Wood',{iconKey:'a'.repeat(64),nameRu:'Текущее имя',maxStack:37})],{source:{kind:'runtime-objectdb'},coverage:{definitionsFound:2,runtimeVerified:true,itemsWithIcons:1}}));
+ const item=registry.resolve('Wood');assert.equal(item.iconUrl,'/api/icons/'+key+'.png');assert.equal(item.nameRu,'Текущее имя');assert.equal(item.maxStack,37);assert.equal(registry.summary().scope,'runtime-objectdb');assert.equal(registry.summary().registered,1);assert.equal(registry.summary().definitionsFound,2);assert.equal(registry.summary().iconsFound,1);assert.equal(registry.iconFile(key),join(dir,'installed-assets/icons',key+'.png'));
+ registry.publish(manifest([definition('Wood',{iconKey:null})]));assert.equal(registry.resolve('Wood').iconUrl,'/api/icons/'+key+'.png');
+});
+
+test('icon POST does not rebuild the full registry for every PNG and becomes available on next refresh',t=>{
+ const {registry}=fixture(t),png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8/x8AAwMCAO+jY1sAAAAASUVORK5CYII=','base64'),key=createHash('sha256').update(png).digest('hex');
+ registry.publish(manifest([definition('Wood',{iconKey:key})]));const generation=registry.generation;
+ registry.publishIcon(key,png);assert.equal(registry.generation,generation);registry.reload();assert.equal(registry.resolve('Wood').iconUrl,'/api/icons/'+key+'.png');
+ const after=registry.generation;for(let i=0;i<10;i++)registry.publishIcon(key,png);assert.equal(registry.reload(),false);assert.equal(registry.generation,after);
+});
+
 test('registry accepts every definition in a large synthetic manifest and resolves all exact IDs/hashes',t=> {
   const {registry}=fixture(t),items=Array.from({length:2048},(_,i)=>definition('SyntheticItem_'+i));registry.publish(manifest(items));
   assert.equal(registry.summary().registered,2048);assert.equal(registry.summary().coveragePercent,100);assert.equal(registry.summary().runtimeVerified,false);assert.equal(registry.summary().scope,'installed-assets');

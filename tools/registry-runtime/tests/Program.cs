@@ -41,4 +41,42 @@ Check(rejected, "Invalid triangle list is rejected");
 rejected = false;
 try { RegistryAlgorithms.Rasterize(2, 2, vertices, vertices, triangles, [1], 2, 2, 0, 0); } catch (ArgumentException) { rejected = true; }
 Check(rejected, "Inconsistent atlas crop is rejected");
-Console.WriteLine($"{passed} runtime-algorithm checks PASS. Synthetic geometry/CSV tests; not a running Valheim or GPU integration test.");
+
+var uploadIcons = Enumerable.Range(0, 8).ToDictionary(i => i.ToString(), i => new byte[] { (byte)i });
+int manifests = 0;
+var upload = await RegistryUpload.PublishAsync(uploadIcons,
+    (key, bytes) => Task.FromResult<string>(key == "4" ? "HTTP_503" : null!),
+    () => { manifests++; return Task.FromResult<string>(null!); });
+Check(!upload.Success && upload.FailureCode == "ICON_HTTP_503" && manifests == 0,
+    "A failed icon POST never publishes a partial manifest");
+Check(upload.IconsUploaded > 0 && upload.IconsUploaded < uploadIcons.Count,
+    "A partially completed icon batch stops taking new pending uploads after failure");
+
+int active = 0, maximumActive = 0, completedIcons = 0;
+upload = await RegistryUpload.PublishAsync(uploadIcons,
+    async (key, bytes) =>
+    {
+        int current = Interlocked.Increment(ref active);
+        int observed;
+        do { observed = maximumActive; } while (current > observed && Interlocked.CompareExchange(ref maximumActive, current, observed) != observed);
+        await Task.Delay(2);
+        Interlocked.Decrement(ref active); Interlocked.Increment(ref completedIcons);
+        return null!;
+    },
+    () => { Check(completedIcons == uploadIcons.Count && active == 0, "Manifest waits until all parallel icon POSTs finish"); manifests++; return Task.FromResult<string>(null!); });
+Check(upload.Success && upload.IconsUploaded == uploadIcons.Count && manifests == 1 && maximumActive <= 2,
+    "Retry can publish the full original manifest with at most two icon workers");
+
+upload = await RegistryUpload.PublishAsync(uploadIcons,
+    (key, bytes) => Task.FromResult<string>(null!),
+    () => Task.FromResult("HTTP_413"));
+Check(!upload.Success && upload.FailureCode == "MANIFEST_HTTP_413" && upload.IconsUploaded == uploadIcons.Count,
+    "Manifest failure is reported separately after successful icons");
+
+manifests = 0;
+upload = await RegistryUpload.PublishAsync(new Dictionary<string, byte[]>(),
+    (key, bytes) => throw new Exception("No icon requests expected"),
+    () => { manifests++; return Task.FromResult<string>(null!); });
+Check(upload.Success && upload.IconsUploaded == 0 && manifests == 1,
+    "A catalog without source icons can still publish");
+Console.WriteLine($"{passed} runtime-algorithm/transport checks PASS. Synthetic geometry, CSV and POST delegates; not a running Valheim or GPU integration test.");

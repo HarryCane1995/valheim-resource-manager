@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../../plugin/RegistryAlgorithms.cs" Link="RegistryAlgorithms.cs" />
+    <Compile Include="../../../plugin/RegistryUpload.cs" Link="RegistryUpload.cs" />
   </ItemGroup>
 </Project>

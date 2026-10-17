@@ -23,7 +23,10 @@ namespace ValheimResourceManager
         private readonly HashSet<string> _registryUnknown = new HashSet<string>(StringComparer.Ordinal);
         private RegistryExport _registryExport;
         private RegistryExport _registrySendingExport;
-        private Task<bool> _registrySend;
+        private Task<RegistryUpload.Result> _registrySend;
+        // Registry uploads can span slow local disk/registry reloads. Keep their deadline
+        // separate from the short inventory heartbeat deadline.
+        private static readonly HttpClient RegistryHttp = new HttpClient(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(10) };
         private bool _registryWarned;
         private int _registryGeneration;
         private const int IconByteLimit = 512 * 1024, TotalIconByteLimit = 64 * 1024 * 1024;
@@ -339,7 +342,8 @@ namespace ValheimResourceManager
             if (_registrySend != null)
             {
                 if (!_registrySend.IsCompleted) return;
-                bool success = _registrySend.Status == TaskStatus.RanToCompletion && _registrySend.Result;
+                bool success = _registrySend.Status == TaskStatus.RanToCompletion && _registrySend.Result.Success;
+                string failure = _registrySend.Status == TaskStatus.RanToCompletion ? _registrySend.Result.FailureCode : "TASK_" + _registrySend.Status;
                 _registrySend = null;
                 bool newerExportReady = _registryExport != _registrySendingExport;
                 _registrySendingExport = null;
@@ -347,7 +351,7 @@ namespace ValheimResourceManager
                 else
                 {
                     _nextRegistryRetry = now + 30f;
-                    if (!_registryWarned) { Logger.LogWarning("Registry/icon upload incomplete. Retaining private local capture and retrying separately from inventory synchronization."); _registryWarned = true; }
+                    if (!_registryWarned) { Logger.LogWarning("Registry/icon upload incomplete (" + failure + "). Previous backend registry retained; retrying separately from inventory synchronization."); _registryWarned = true; }
                 }
                 if (newerExportReady) _nextRegistryRetry = 0;
             }
@@ -359,29 +363,12 @@ namespace ValheimResourceManager
             var registryUri = new Uri(endpoint, "/api/registry");
             var iconBase = new Uri(endpoint, "/api/icons/");
             _nextRegistryRetry = now + 30f;
-            _registrySend = Task.Run(async () =>
-            {
-                bool iconsOk = true;
-                var pending = new Queue<KeyValuePair<string, byte[]>>(export.Icons);
-                object gate = new object();
-                Func<Task> worker = async () =>
-                {
-                    while (true)
-                    {
-                        KeyValuePair<string, byte[]> icon;
-                        lock (gate) { if (!iconsOk || pending.Count == 0) return; icon = pending.Dequeue(); }
-                        bool ok = await PostExport(new Uri(iconBase, icon.Key + ".png"), token, icon.Value, "image/png").ConfigureAwait(false);
-                        if (!ok) lock (gate) iconsOk = false;
-                    }
-                };
-                await Task.WhenAll(worker(), worker()).ConfigureAwait(false);
-                // Metadata is still delivered after an icon failure: identities never depend on images.
-                bool registryOk = await PostExport(registryUri, token, Encoding.UTF8.GetBytes(export.Body), "application/json").ConfigureAwait(false);
-                return registryOk && iconsOk;
-            });
+            _registrySend = Task.Run(() => RegistryUpload.PublishAsync(export.Icons,
+                (key, bytes) => PostExport(new Uri(iconBase, key + ".png"), token, bytes, "image/png"),
+                () => PostExport(registryUri, token, Encoding.UTF8.GetBytes(export.Body), "application/json")));
         }
 
-        private static async Task<bool> PostExport(Uri uri, string token, byte[] bytes, string contentType)
+        private static async Task<string> PostExport(Uri uri, string token, byte[] bytes, string contentType)
         {
             try
             {
@@ -390,10 +377,12 @@ namespace ValheimResourceManager
                     request.Headers.Add("X-VRM-Token", token);
                     request.Content = new ByteArrayContent(bytes);
                     request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
-                    using (var response = await Http.SendAsync(request).ConfigureAwait(false)) return response.IsSuccessStatusCode;
+                    using (var response = await RegistryHttp.SendAsync(request).ConfigureAwait(false))
+                        return response.IsSuccessStatusCode ? null : "HTTP_" + (int)response.StatusCode;
                 }
             }
-            catch { return false; }
+            catch (TaskCanceledException) { return "REQUEST_TIMEOUT"; }
+            catch (Exception ex) { return ex.GetType().Name; }
         }
     }
 }

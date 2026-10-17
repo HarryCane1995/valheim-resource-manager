@@ -43,7 +43,7 @@ export function createApp({dataDir=resolve(ROOT,'data'),localDataDir=dataDir===r
       const clusterMatch=/^\/api\/clusters\/([^/]+)$/.exec(url.pathname);
       if(req.method==='PUT' && clusterMatch) {const cluster=registry.renameCluster(decodeURIComponent(clusterMatch[1]),await body(req));notify(real);notify(demo);return json(res,200,{ok:true,cluster,clusters:registry.clusters});}
       const iconMatch=/^\/api\/icons\/([a-f0-9]{64})\.png$/.exec(url.pathname);
-      if(iconMatch && req.method==='POST') {authorizeSource(req);if(!/^image\/png(?:\s*;|$)/i.test(req.headers['content-type'] || ''))throw new ApiError(415,'Требуется Content-Type: image/png.','CONTENT_TYPE');const icon=registry.publishIcon(iconMatch[1],await bytes(req,512*1024));notify(real);notify(demo);return json(res,200,{ok:true,...icon});}
+      if(iconMatch && req.method==='POST') {authorizeSource(req);if(!/^image\/png(?:\s*;|$)/i.test(req.headers['content-type'] || ''))throw new ApiError(415,'Требуется Content-Type: image/png.','CONTENT_TYPE');const icon=registry.publishIcon(iconMatch[1],await bytes(req,512*1024));return json(res,200,{ok:true,...icon});}
       if(iconMatch && ['GET','HEAD'].includes(req.method)) {const file=registry.iconFile(iconMatch[1]);if(!file)throw new ApiError(404,'Пиктограмма не найдена.','ICON_NOT_FOUND');const stat=statSync(file);res.statusCode=200;res.setHeader('Content-Type','image/png');res.setHeader('Content-Length',stat.size);res.setHeader('Cache-Control','private, max-age=31536000, immutable');if(req.method==='HEAD')res.end();else createReadStream(file).on('error',()=>res.destroy()).pipe(res);return;}
       if(req.method==='POST' && ['/api/ingest','/api/snapshot'].includes(url.pathname)) {
         authorizeSource(req);
