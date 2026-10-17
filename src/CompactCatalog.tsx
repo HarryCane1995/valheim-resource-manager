@@ -21,13 +21,15 @@ const summaryTitle=(summary:ResourceSummary)=>`${fmt(summary.uniqueItems)} ти�
 export function CompactCatalog({resources,state,selected,onSelect,sort,direction,onSort,active,scrollMemory,query=''}:{resources:Resource[];state:State;selected:string|null;onSelect:(id:string)=>void;sort:SortColumn;direction:'asc'|'desc';onSort:(column:SortColumn)=>void;active:boolean;scrollMemory:MutableRefObject<{top:number;left:number}>;query?:string}){
  const [density,setDensity]=useState(()=>readPreference('vrm.rowHeight',32,(v):v is number=>typeof v==='number'&&[30,32,34,40].includes(v)));
  const [preferences,setPreferences]=useState(()=>readPreference(compactGroupsKey,defaultGroupPreferences,isCompactGroupPreferences));
+ const [layoutColumns,setLayoutColumns]=useState(()=>readPreference('vrm.compactColumns.v1',1,(value):value is 1|2=>value===1||value===2));
  const [visible,setVisible]=useState(()=>readPreference('vrm.columns',defaultColumns,(v):v is Column[]=>Array.isArray(v)&&v.includes('name')&&v.every(c=>defaultColumns.includes(c))));
  const activeColumns=useMemo(()=>columns.filter(c=>visible.includes(c.id)),[visible]);
  const groups=useMemo(()=>clusterGroups(resources,state.clusters).filter(group=>group.items.length),[resources,state.clusters]);
  const legacyGroups=useMemo(()=>groupResources(resources,true),[resources]);
  const searching=Boolean(query.trim());
  const groupKeys=useMemo(()=>preferences.mode==='clusters'?groups.flatMap(group=>[clusterKey(group.id),...group.categories.filter(category=>category.items.length).map(category=>categoryKey(group.id,category.id))]):legacyGroups.map(group=>legacyCategoryKey(group.category)),[groups,legacyGroups,preferences.mode]);
- const scrollRef=useRef<HTMLDivElement>(null),hydratedScroll=useRef(false);
+ const scrollRefs=useRef<(HTMLDivElement|null)[]>([]),hydratedScroll=useRef(false);
+ const secondaryScroll=useRef({top:0,left:0});
  const selectRef=useRef(onSelect);
  useLayoutEffect(()=>{selectRef.current=onSelect;},[onSelect]);
  const selectItem=useCallback((id:string)=>selectRef.current(id),[]);
@@ -36,9 +38,18 @@ export function CompactCatalog({resources,state,selected,onSelect,sort,direction
    hydratedScroll.current=true;
    const saved=readPreference('vrm.compactScroll.v1',null,(value):value is {version:1;top:number;left:number}=>Boolean(value&&typeof value==='object'&&(value as {version?:number}).version===1&&Number.isFinite((value as {top?:number}).top)&&Number.isFinite((value as {left?:number}).left)));
    if(saved)scrollMemory.current={top:Math.max(0,saved.top),left:Math.max(0,saved.left)};
+   const secondary=readPreference('vrm.compactScroll.secondary.v1',null,(value):value is {top:number;left:number}=>Boolean(value&&typeof value==='object'&&Number.isFinite((value as {top?:number}).top)&&Number.isFinite((value as {left?:number}).left)));
+   if(secondary)secondaryScroll.current={top:Math.max(0,secondary.top),left:Math.max(0,secondary.left)};
   }
-  if(active&&scrollRef.current){scrollRef.current.scrollTop=scrollMemory.current.top;scrollRef.current.scrollLeft=scrollMemory.current.left;}
- },[active,resources.length,scrollMemory]);
+  if(active)scrollRefs.current.forEach((element,index)=>{if(element){const position=index===0?scrollMemory.current:secondaryScroll.current;element.scrollTop=position.top;element.scrollLeft=position.left;}});
+ },[active,resources.length,scrollMemory,layoutColumns]);
+ const panes=useMemo(()=>{
+  if(layoutColumns===1)return [resources];
+  const sections=preferences.mode==='clusters'?groups.map(group=>group.categories.flatMap(category=>category.items)):preferences.mode==='categories'?legacyGroups.map(group=>group.items):[];
+  if(sections.length>1){const middle=Math.ceil(sections.length/2);return [sections.slice(0,middle).flat(),sections.slice(middle).flat()];}
+  const ordered=sections.length?sections[0]:resources,middle=Math.ceil(ordered.length/2);
+  return [ordered.slice(0,middle),ordered.slice(middle)];
+ },[layoutColumns,resources,preferences.mode,groups,legacyGroups]);
  const updatePreferences=(next:CompactGroupPreferences)=>{setPreferences(next);savePreference(compactGroupsKey,next);};
  const toggleGroup=(key:string)=>updatePreferences({...preferences,collapsed:toggleCollapsedGroup(preferences.collapsed,key)});
  const changeMode=(mode:GroupMode)=>updatePreferences({...preferences,mode});
@@ -55,30 +66,33 @@ export function CompactCatalog({resources,state,selected,onSelect,sort,direction
    </button></th>
   </tr>;
  };
- return <div className="compact-catalog" data-testid="compact-catalog" data-grouping={preferences.mode} style={{'--row-height':`${density}px`} as CSSProperties}>
+ return <div className="compact-catalog" data-testid="compact-catalog" data-grouping={preferences.mode} data-layout-columns={layoutColumns} style={{'--row-height':`${density}px`} as CSSProperties}>
   <div className="compact-options">
    <label>Группировка<select aria-label="Группировка" data-testid="compact-grouping" value={preferences.mode} onChange={event=>changeMode(event.target.value as GroupMode)}><option value="clusters">Кластеры</option><option value="categories">Категории</option><option value="none">Без группировки</option></select></label>
+   <label>Колонки<select aria-label="Количество колонок" data-testid="compact-layout-columns" value={layoutColumns} onChange={event=>{const next=Number(event.target.value) as 1|2;setLayoutColumns(next);savePreference('vrm.compactColumns.v1',next);}}><option value={1}>1</option><option value={2}>2</option></select></label>
    <label>Строка<select aria-label="Высота строки" value={density} onChange={event=>{const next=Number(event.target.value);setDensity(next);savePreference('vrm.rowHeight',next);}}>{[30,32,34,40].map(n=><option key={n} value={n}>{n} px</option>)}</select></label>
    {preferences.mode!=='none'&&<span className="compact-collapse-actions"><button className="compact-link" disabled={searching||!groupKeys.length} onClick={()=>updatePreferences({...preferences,collapsed:[...new Set([...preferences.collapsed,...groupKeys])]})}>Свернуть всё</button><span>·</span><button className="compact-link" disabled={searching||!groupKeys.length} onClick={()=>updatePreferences({...preferences,collapsed:preferences.collapsed.filter(key=>!groupKeys.includes(key))})}>Развернуть всё</button></span>}
    <details className="column-picker"><summary><Columns3 size={13}/>Столбцы<ChevronDown size={12}/></summary><div role="group" aria-label="Видимость столбцов">{columns.map(c=><label key={c.id}><input type="checkbox" checked={visible.includes(c.id)} disabled={c.id==='name'} onChange={()=>toggleColumn(c.id)}/>{c.label}</label>)}</div></details>
   </div>
   {searching&&preferences.mode!=='none'&&<div className="compact-search-context" role="status">Группы с результатами поиска раскрыты. Сохранённое сворачивание восстановится после очистки поиска.</div>}
-  <div className="compact-table-scroll" data-testid="compact-scroll" ref={scrollRef} onScroll={event=>{if(active){const position={top:event.currentTarget.scrollTop,left:event.currentTarget.scrollLeft};scrollMemory.current=position;savePreference('vrm.compactScroll.v1',{version:1,...position});}}} tabIndex={0} aria-label="Плотный каталог ресурсов">
-   <table className="compact-table" data-testid="compact-resource-table"><colgroup>{activeColumns.map(c=><col key={c.id} className={`column-${c.id}`}/>)}</colgroup><thead><tr>{activeColumns.map(c=><th key={c.id} scope="col" className={`cell-${c.id}`} title={c.title} aria-sort={c.sort&&sort===c.sort?(direction==='asc'?'ascending':'descending'):c.sort?'none':undefined}>{c.sort?<button onClick={()=>onSort(c.sort!)} aria-label={`Сортировать: ${c.label}`}>{c.label}{sort===c.sort&&(direction==='asc'?<ArrowUp size={11}/>:<ArrowDown size={11}/>)}</button>:<span className="sr-only">{c.label}</span>}</th>)}</tr></thead>
-    {preferences.mode==='clusters'&&groups.map(group=><tbody key={group.id} data-cluster-id={group.id}>
+  {layoutColumns===2&&<p className="compact-columns-note">Итоги групп относятся к предметам своей колонки. Прокрутка каждой колонки независима.</p>}
+  <div className="compact-columns-grid">{panes.map((items,index)=><div className="compact-pane" key={index} data-testid="compact-pane">
+  <div className="compact-table-scroll" data-testid={index===0?'compact-scroll':'compact-scroll-secondary'} ref={element=>{scrollRefs.current[index]=element;}} onScroll={event=>{if(active){const position={top:event.currentTarget.scrollTop,left:event.currentTarget.scrollLeft};if(index===0){scrollMemory.current=position;savePreference('vrm.compactScroll.v1',{version:1,...position});}else{secondaryScroll.current=position;savePreference('vrm.compactScroll.secondary.v1',position);}}}} tabIndex={0} aria-label={`Плотный каталог ресурсов${layoutColumns===2?`, колонка ${index+1}`:''}`}>
+   <table className="compact-table" data-testid={index===0?'compact-resource-table':'compact-resource-table-secondary'}><colgroup>{activeColumns.map(c=><col key={c.id} className={`column-${c.id}`}/>)}</colgroup><thead><tr>{activeColumns.map(c=><th key={c.id} scope="col" className={`cell-${c.id}`} title={c.title} aria-sort={c.sort&&sort===c.sort?(direction==='asc'?'ascending':'descending'):c.sort?'none':undefined}>{c.sort?<button onClick={()=>onSort(c.sort!)} aria-label={`Сортировать: ${c.label}`}>{c.label}{sort===c.sort&&(direction==='asc'?<ArrowUp size={11}/>:<ArrowDown size={11}/>)}</button>:<span className="sr-only">{c.label}</span>}</th>)}</tr></thead>
+    {preferences.mode==='clusters'&&clusterGroups(items,state.clusters).filter(group=>group.items.length).map(group=><tbody key={group.id} data-cluster-id={group.id}>
      {renderHeading(clusterKey(group.id),group.name,group.summary,'cluster')}
      {groupIsOpen(clusterKey(group.id),preferences.collapsed,query)&&group.categories.filter(category=>category.items.length).map(category=>[
       renderHeading(categoryKey(group.id,category.id),category.name,category.summary,'category'),
       groupIsOpen(categoryKey(group.id,category.id),preferences.collapsed,query)&&renderRows(category.items,2)
      ])}
     </tbody>)}
-    {preferences.mode==='categories'&&legacyGroups.map(group=><tbody key={group.category}>
+    {preferences.mode==='categories'&&groupResources(items,true).map(group=><tbody key={group.category}>
      {renderHeading(legacyCategoryKey(group.category),group.category,summarizeResources(group.items),'category')}
      {groupIsOpen(legacyCategoryKey(group.category),preferences.collapsed,query)&&renderRows(group.items,1)}
     </tbody>)}
-    {preferences.mode==='none'&&<tbody>{renderRows(resources,0)}</tbody>}
+    {preferences.mode==='none'&&<tbody>{renderRows(items,0)}</tbody>}
    </table>
-  </div>
+  </div></div>)}</div>
  </div>;
 }
 
