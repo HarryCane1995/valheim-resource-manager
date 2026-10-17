@@ -4,7 +4,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AssemblyName>ValheimResourceManager</AssemblyName>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <GameDirectory Condition="'$(GameDirectory)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Valheim</GameDirectory>
     <ManagedDirectory>$(GameDirectory)\valheim_Data\Managed</ManagedDirectory>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
@@ -27,6 +27,7 @@
     <Reference Include="System.IO.Compression"><HintPath>$(ManagedDirectory)\System.IO.Compression.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine"><HintPath>$(ManagedDirectory)\UnityEngine.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(ManagedDirectory)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.ImageConversionModule"><HintPath>$(ManagedDirectory)\UnityEngine.ImageConversionModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Newtonsoft.Json"><HintPath>$(ManagedDirectory)\Newtonsoft.Json.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 </Project>

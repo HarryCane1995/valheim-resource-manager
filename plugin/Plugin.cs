@@ -15,8 +15,8 @@ using UnityEngine;
 
 namespace ValheimResourceManager
 {
-    [BepInPlugin(PluginId, "Valheim Resource Manager", "0.1.0")]
-    public sealed class Plugin : BaseUnityPlugin
+    [BepInPlugin(PluginId, "Valheim Resource Manager", "0.2.0")]
+    public sealed partial class Plugin : BaseUnityPlugin
     {
         public const string PluginId = "local.valheimresourcemanager";
         internal static Plugin Instance;
@@ -44,6 +44,14 @@ namespace ValheimResourceManager
         private FieldInfo _sectorsField;
         private FieldInfo _lastRevisionField;
         private int _decodeWarnings;
+        private readonly Dictionary<ItemDrop.ItemData.SharedData, string> _unknownSharedIds = new Dictionary<ItemDrop.ItemData.SharedData, string>(new SharedIdentityComparer());
+        private long _unknownSharedSequence;
+
+        private sealed class SharedIdentityComparer : IEqualityComparer<ItemDrop.ItemData.SharedData>
+        {
+            public bool Equals(ItemDrop.ItemData.SharedData a, ItemDrop.ItemData.SharedData b) => ReferenceEquals(a, b);
+            public int GetHashCode(ItemDrop.ItemData.SharedData value) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value);
+        }
 
         private sealed class Tracked { public Container Container; public ZNetView View; public Action OnChanged; }
         private sealed class PrefabInfo { public string Name, DisplayName; }
@@ -80,6 +88,7 @@ namespace ValheimResourceManager
                 string world = net.GetWorldUID().ToString(CultureInfo.InvariantCulture);
                 if (_net != net || _worldId != world || _manager != ZDOMan.instance) StartWorld(net, world);
                 float now = Time.realtimeSinceStartup;
+                PumpRegistry(now);
                 if (now >= _nextDiscovery) { Discover(); _nextDiscovery = now + 10f; }
                 if (now >= _nextCapture) { CaptureDirty(); _nextCapture = now + 0.35f; }
                 if (now >= _nextHeartbeat)
@@ -106,6 +115,7 @@ namespace ValheimResourceManager
             _manager.m_onZDODestroyed += OnZdoDestroyed;
             _nextDiscovery = _nextCapture = _nextHeartbeat = _nextScan = 0;
             BuildPrefabCatalog();
+            RequestRegistryScan();
             Logger.LogInfo("Observing world " + _worldName + " (" + _worldId + "), mode=" + _mode + ", coverage=partial; stationary containers only.");
         }
 
@@ -115,6 +125,8 @@ namespace ValheimResourceManager
             foreach (var pair in _tracked) pair.Key.m_onChanged -= pair.Value.OnChanged;
             _tracked.Clear(); _dirty.Clear(); _pending.Clear(); _destroyed.Clear(); _observedIds.Clear(); _prefabs.Clear(); _scanned.Clear();
             _manager = null; _net = null; _worldId = null; _worldName = null; _sectors = null;
+            _unknownSharedIds.Clear(); _unknownSharedSequence = 0;
+            CancelRegistryScan();
             // A previous request may complete, but its immutable body still contains its original world/session.
             _inFlight = null;
         }
@@ -198,8 +210,19 @@ namespace ValheimResourceManager
                 if (item == null || item.m_stack <= 0) continue;
                 if (item.m_shared == null) throw new InvalidOperationException("item metadata unavailable");
                 var itemPrefab = item.m_dropPrefab;
-                string name = itemPrefab ? itemPrefab.name : "unknown:" + item.m_shared.m_name;
-                items.Add(new ItemRecord { prefab = name, name = Localize(item.m_shared.m_name), quantity = item.m_stack });
+                if (!itemPrefab && ObjectDB.instance) itemPrefab = ObjectDB.instance.GetItemPrefab(item.m_shared);
+                // A missing prefab is never identified solely by a shared/display name: two
+                // unrelated mod definitions may use the same localization token. Preserve a
+                // session-scoped raw definition identity until its provider registers a prefab.
+                string name;
+                if (itemPrefab) name = itemPrefab.name;
+                else if (!_unknownSharedIds.TryGetValue(item.m_shared, out name))
+                {
+                    name = "unknown:session:" + _sessionId + ":definition:" + (++_unknownSharedSequence).ToString(CultureInfo.InvariantCulture);
+                    _unknownSharedIds.Add(item.m_shared, name);
+                }
+                CheckRegistryItem(name);
+                items.Add(new ItemRecord { prefab = name, name = Localize(item.m_shared.m_name), quantity = item.m_stack, quality = item.m_quality, variant = item.m_variant });
             }
             Queue(zdo, prefab, Aggregate(items));
         }
@@ -242,7 +265,7 @@ namespace ValheimResourceManager
             }
         }
 
-        private static List<ItemRecord> ReadSerializedItems(byte[] bytes)
+        private List<ItemRecord> ReadSerializedItems(byte[] bytes)
         {
             var pkg = new ZPackage(bytes);
             int version = pkg.ReadInt();
@@ -256,14 +279,15 @@ namespace ValheimResourceManager
                 var prefab = ObjectDB.instance ? ObjectDB.instance.GetItemPrefab(decoded.prefabHash) : null;
                 var drop = prefab ? prefab.GetComponent<ItemDrop>() : null;
                 string key = prefab ? prefab.name : "hash:" + decoded.prefabHash.ToString(CultureInfo.InvariantCulture);
-                if (decoded.itemData.m_stack > 0) items.Add(new ItemRecord { prefab = key, name = drop ? Localize(drop.m_itemData.m_shared.m_name) : key, quantity = decoded.itemData.m_stack });
+                CheckRegistryItem(key);
+                if (decoded.itemData.m_stack > 0) items.Add(new ItemRecord { prefab = key, name = drop ? Localize(drop.m_itemData.m_shared.m_name) : key, quantity = decoded.itemData.m_stack, quality = decoded.itemData.m_quality, variant = decoded.itemData.m_variant });
             }
             return Aggregate(items);
         }
 
         private static List<ItemRecord> Aggregate(IEnumerable<ItemRecord> items)
         {
-            return items.GroupBy(i => i.prefab, StringComparer.Ordinal).Select(g => new ItemRecord { prefab = g.Key, name = g.First().name, quantity = g.Sum(i => i.quantity) }).OrderBy(i => i.prefab, StringComparer.Ordinal).ToList();
+            return items.GroupBy(i => new { i.prefab, i.quality, i.variant }).Select(g => new ItemRecord { prefab = g.Key.prefab, name = g.First().name, quality = g.Key.quality, variant = g.Key.variant, quantity = g.Sum(i => i.quantity) }).OrderBy(i => i.prefab, StringComparer.Ordinal).ThenBy(i => i.quality).ThenBy(i => i.variant).ToList();
         }
 
         private void Queue(ZDO zdo, PrefabInfo prefab, List<ItemRecord> items)
@@ -348,7 +372,7 @@ namespace ValheimResourceManager
             }
         }
 
-        [Serializable] private sealed class ItemRecord { public string prefab, name; public int quantity; }
+        [Serializable] private sealed class ItemRecord { public string prefab, name; public int quantity, quality, variant; }
         [Serializable] private sealed class ContainerRecord { public string id, identityKey, type, name, observedAt; public float x, y, z; public List<ItemRecord> items; }
     }
 }

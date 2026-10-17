@@ -1,33 +1,10 @@
-import React from 'react';
-export function ResourceIcon({prefab,category='',large=false}:{prefab:string;category?:string;large?:boolean}) {
- const key=prefab.toLowerCase();
- let kind='other';
- if(/trophy/.test(key)||category==='Трофеи') kind='trophy';
- else if(/resin/.test(key)) kind='resin';
- else if(/mushroom/.test(key)) kind='mushroom';
- else if(/wood|log|finewood|roundlog|yggdrasil/.test(key)||category==='Древесина') kind='wood';
- else if(/stone|flint|obsidian|marble|coal|charcoal/.test(key)||/Камень/.test(category)) kind='stone';
- else if(/iron|copper|tin|silver|bronze|metal|ore|blackmetal/.test(key)||/Металлы/.test(category)) kind='metal';
- else if(/berry|berries|rasp|blueber/.test(key)) kind='berries';
- else if(/carrot|turnip|onion|seed|plant|barley|flax/.test(key)||/Растения/.test(category)) kind='plant';
- else if(/meat|neck|sausage|deer|food|mushroom|honey/.test(key)||/Еда/.test(category)) kind='food';
- else if(/coin|amber|ruby|pearl|silvernecklace/.test(key)||/Ценности/.test(category)) kind='coin';
- else if(/trophy/.test(key)||category==='Трофеи') kind='trophy';
- else if(/sword|axe|bow|armor|shield/.test(key)||/снаряжение/.test(category)) kind='equipment';
- const dark=/coal|charcoal|blackmetal/.test(key); const color=/copper|bronze/.test(key)?'#bd8054':/silver|tin/.test(key)?'#bdcbd1':'#7d929e';
- return <svg className={`resource-art ${large?'large':''}`} viewBox="0 0 80 80" fill="none" aria-hidden="true">
- <ellipse cx="40" cy="66" rx="27" ry="6" fill="#000" opacity=".22"/>
- {kind==='wood'&&<><path d="M12 43 47 21 64 30 30 53Z" fill="#9f6b34"/><path d="M30 53 64 30 64 43 30 65Z" fill="#66431f"/><path d="M12 43 30 53 30 65 12 55Z" fill="#d3a66c"/><path d="m15 46 11 7v8l-11-7Z" fill="#ad7d45"/><path d="m17 49 6 4v4l-6-4" stroke="#6e471f" strokeWidth="1.4"/><path d="m15 31 32-20 19 10-32 21Z" fill="#b98a51"/><path d="m34 42 32-21v12L34 54Z" fill="#7d542c"/><path d="m15 31 19 11v12L15 43Z" fill="#ddb47b"/><path d="m20 36 10 6v7l-10-6Z" stroke="#8c5b2e" strokeWidth="1.5"/><path d="m44 17 10 5M40 29l14-9M42 38l16-10M43 48l14-9" stroke="#e4bc7e" strokeOpacity=".35" strokeWidth="1.6"/></>}
- {kind==='stone'&&<><path d="m11 49 7-23 24-12 23 16 5 26-22 12-27-5Z" fill={dark?'#343a3d':'#8b969c'}/><path d="m18 26 24-12-6 28L11 49Z" fill={dark?'#53595d':'#b3bdc0'}/><path d="m42 14 23 16-29 12Z" fill={dark?'#62666a':'#a3afb4'}/><path d="m36 42 29-12 5 26-22 12Z" fill={dark?'#3f474b':'#73828b'}/><path d="m11 49 25-7 12 26-27-5Z" fill={dark?'#282f32':'#56656c'}/><path d="m18 26 18 16M42 14l-6 28 12 26" stroke="#d7e5e8" strokeOpacity=".2"/></>}
- {kind==='metal'&&<><path d="m11 44 15-10 36 7 7 15-17 10-36-7Z" fill={dark?'#333b40':color}/><path d="m11 44 36 7 5 15-36-7Z" fill={dark?'#56636a':'#a9bdc5'}/><path d="m47 51 15-10 7 15-17 10Z" fill="#34444f"/><path d="m17 27 15-10 29 6 6 15-15 10-29-6Z" fill={dark?'#4c565c':color}/><path d="m17 27 29 6 6 15-29-6Z" fill={dark?'#74818b':'#becbd1'}/><path d="m46 33 15-10 6 15-15 10Z" fill="#4c606d"/><path d="m17 27 15-10 29 6-15 10Z" fill={dark?'#91a1ac':color}/><path d="m25 29 17 4M19 47l24 5" stroke="#fff" strokeOpacity=".45" strokeWidth="2"/></>}
- {kind==='berries'&&<><path d="M43 38c-4-15 7-22 13-21-2 8-5 13-13 21Z" fill="#598555"/><path d="M44 38c0-13-10-20-18-17 4 10 10 13 18 17Z" fill="#80a260"/><path d="m43 40 1-23" stroke="#b8a275" strokeWidth="3"/><circle cx="27" cy="47" r="15" fill={key.includes('blue')?'#4f6194':'#b94745'}/><circle cx="51" cy="49" r="17" fill={key.includes('blue')?'#677ca8':'#dd6652'}/><circle cx="40" cy="34" r="13" fill={key.includes('blue')?'#7a88b1':'#d15a50'}/><path d="m22 37 5-2M45 39l5-2M35 25l4-1" stroke="#ffd1a7" strokeOpacity=".65" strokeWidth="4" strokeLinecap="round"/></>}
- {kind==='plant'&&<><path d="m26 35 28 5-26 31Z" fill="#d68d3f"/><path d="m26 35 13 8-11 28Z" fill="#f0b66a"/><path d="m39 39-6-25 9 7 5-12 3 14 15-4-14 22Z" fill="#7d9c63"/><path d="m39 39 5-17" stroke="#bfd491" strokeWidth="2"/><path d="m30 45 7 3m-7 8 4 2" stroke="#8d5827" strokeWidth="2"/></>}
- {kind==='mushroom'&&<><path d="m34 40-2 23c0 7 19 7 19 0l-5-23Z" fill="#c5b586"/><path d="m43 40 2 25 6-2-5-23Z" fill="#8f835f"/><path d="M10 42c1-14 16-28 30-29 14 1 27 14 31 29-13 7-45 8-61 0Z" fill={key.includes('yellow')?'#c5a94a':'#b96a4d'}/><path d="M10 42c15 8 46 8 61 0-8 17-48 17-61 0Z" fill="#817044"/><path d="M16 36c5-10 15-18 25-19" stroke={key.includes('yellow')?'#e1c86a':'#d68f6b'} strokeWidth="3" strokeLinecap="round"/><path d="m25 29 3 1m19-6 3 2m6 10 3 1M35 39l2 1" stroke="#e5d8a5" strokeOpacity=".5" strokeWidth="4" strokeLinecap="round"/></>}
- {kind==='resin'&&<><path d="m31 13 16 5 15 21-5 20-18 10-24-13-3-20Z" fill="#a9772b"/><path d="m31 13 16 5-10 27-25-9Z" fill="#e1b656"/><path d="m37 45 25-6-5 20-18 10Z" fill="#bd8b30"/><path d="m12 36 25 9 2 24-24-13Z" fill="#c3963d"/><path d="m31 13 6 32 25-6" stroke="#f2d47a" strokeOpacity=".5" strokeWidth="2"/><path d="m25 26-5 10m30 13-4 8" stroke="#ffdfa0" strokeOpacity=".7" strokeWidth="3" strokeLinecap="round"/></>}
- {kind==='food'&&<><path d="M15 44c-8-15 6-30 22-22l20 7c13-2 20 16 10 25-11 10-23 5-31 7-10 2-21-5-21-17Z" fill="#925a43"/><path d="M20 43c-5-12 7-23 19-17l18 7c10 1 11 13 6 18-8 7-19 3-28 6-8 2-15-5-15-14Z" fill="#c98162"/><path d="m32 32 14 17m0-16 8 11" stroke="#f0b995" strokeWidth="4" strokeLinecap="round"/><path d="m58 26 9-9m-4-3 7 7" stroke="#d4c7a6" strokeWidth="6" strokeLinecap="round"/></>}
- {kind==='coin'&&<><ellipse cx="30" cy="55" rx="20" ry="10" fill="#987134"/><path d="M10 47v8c0 13 40 13 40 0v-8Z" fill="#ae7d34"/><ellipse cx="30" cy="47" rx="20" ry="10" fill="#dbb867"/><ellipse cx="30" cy="47" rx="13" ry="6" stroke="#a97d37" strokeWidth="2"/><path d="M32 36v8c0 13 37 13 37 0v-8Z" fill="#bd8b3b"/><ellipse cx="50.5" cy="36" rx="18.5" ry="10" fill="#eed28a"/><ellipse cx="50.5" cy="36" rx="12" ry="6" stroke="#ba8d40" strokeWidth="2"/><path d="m48 32 5 8m-7-3 9-2" stroke="#ad7c30" strokeWidth="2"/></>}
- {kind==='trophy'&&<><path d="m31 36-8-15-8-5 1 13 14 15m19-8 8-15 8-5-1 13-14 15" stroke="#b1a58c" strokeWidth="5" strokeLinejoin="round"/><path d="m22 23-3-13m39 13 3-13" stroke="#d0c4a9" strokeWidth="3"/><path d="m27 36 13-7 13 7 3 17-16 15-16-15Z" fill="#ad9e80"/><path d="m40 29 13 7 3 17-16 15Z" fill="#736b58"/><path d="m29 45 6 2m10 0 6-2" stroke="#252d2c" strokeWidth="4"/><path d="m36 56 4 4 4-4" stroke="#3b3c33" strokeWidth="3"/></>}
- {kind==='equipment'&&<><path d="m52 12 12 4-28 37-8-7Z" fill="#b6c3c7"/><path d="m52 12 3 12-23 26-4-4Z" fill="#e4e9df"/><path d="m22 43 22 17" stroke="#c59c55" strokeWidth="7" strokeLinecap="round"/><path d="m31 54-12 14" stroke="#81603c" strokeWidth="7"/><path d="m15 65 8 6" stroke="#d3ad68" strokeWidth="5"/></>}
- {kind==='other'&&<><path d="m24 23 17-9 18 10 7 28-26 17-24-15Z" fill="#b78e45"/><path d="m24 23 17-9 1 26-26 14Z" fill="#ddbd75"/><path d="m42 40 17-16 7 28-26 17Z" fill="#836332"/><path d="m24 23 18 17 17-16" stroke="#e5c885" strokeWidth="2"/><path d="m26 42 7-4" stroke="#f9e2a4" strokeWidth="3"/></>}
- </svg>;
+import { useState } from 'react';
+
+/** Only registry-provided game sprites are images. Missing sprites stay visibly neutral. */
+export function ResourceIcon({prefab,name,category='',iconUrl,large=false}:{prefab:string;name?:string;category?:string;iconUrl?:string|null;large?:boolean}) {
+ const [failedUrl,setFailedUrl]=useState<string|null>(null);
+ const label=name||prefab;
+ const abbreviation=label.replace(/^prefab:|^hash:/,'').split(/[\s_\-]+/).filter(Boolean).slice(0,2).map(word=>word[0]).join('').toLocaleUpperCase('ru').slice(0,2)||'?';
+ if(iconUrl&&failedUrl!==iconUrl)return <img className={`resource-art authentic-icon ${large?'large':''}`} src={iconUrl} alt={`Игровая пиктограмма: ${label}`} loading="lazy" decoding="async" onError={()=>setFailedUrl(iconUrl)} data-testid="authentic-item-icon"/>;
+ return <span className={`resource-art icon-fallback ${large?'large':''}`} role="img" aria-label={`Нет игровой пиктограммы: ${label}`} title={`MISSING ICON · ${label}${category?` · ${category}`:''}`} data-testid="item-icon-fallback">{abbreviation}</span>;
 }

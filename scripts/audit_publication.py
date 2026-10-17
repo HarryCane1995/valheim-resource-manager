@@ -8,13 +8,14 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-FORBIDDEN_DIRS = {'data', 'output', '.runtime', '.playwright-cli', 'node_modules', 'dist',
+FORBIDDEN_DIRS = {'data', 'localdata', 'output', '.runtime', '.playwright-cli', 'node_modules', 'dist',
                   'bin', 'obj', '__pycache__', 'worlds', 'worlds_local', 'characters',
                   'characters_local', 'backups', 'decompiled', 'references'}
 FORBIDDEN_SUFFIXES = {'.dll', '.exe', '.pdb', '.nupkg', '.zip', '.7z', '.tar', '.gz',
                       '.db', '.db2', '.sqlite', '.sqlite3', '.fwl', '.fwl2', '.fch', '.fch2',
                       '.chunk', '.chunks', '.ok', '.log', '.pid', '.key', '.pem', '.pfx',
-                      '.p12', '.cfg', '.pyc', '.asset', '.bundle', '.unity', '.fbx'}
+                      '.p12', '.cfg', '.pyc', '.asset', '.bundle', '.unity', '.fbx', '.assets', '.ress',
+                      '.png', '.webp', '.jpg', '.jpeg', '.dds', '.tga'}
 PATTERNS = {
     'personal_absolute_path': re.compile(r'(?i)\b[A-Z]:[\\/]+Users[\\/]+[^\\/\s<>"\']+|/(?:home|Users)/[^/\s<>"\']+'),
     'github_credential': re.compile(r'\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b'),

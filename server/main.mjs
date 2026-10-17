@@ -5,13 +5,14 @@ import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { InventoryStore, ApiError } from './store.mjs';
+import { ItemRegistry } from './registry.mjs';
 import { object, string, number, worldBody, validateIngest, validateZone } from './validation.mjs';
 
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const MAX_BODY=3*1024*1024;
 const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.ico':'image/x-icon','.woff2':'font/woff2','.webp':'image/webp'};
 
-export function createApp({dataDir=resolve(ROOT,'data'),distDir=resolve(ROOT,'dist'),port=37841,now=()=>Date.now(),token:providedToken,intervals=true}={}) {
+export function createApp({dataDir=resolve(ROOT,'data'),localDataDir=dataDir===resolve(ROOT,'data')?resolve(ROOT,'localdata'):resolve(dataDir,'localdata'),distDir=resolve(ROOT,'dist'),port=37841,now=()=>Date.now(),token:providedToken,intervals=true}={}) {
   mkdirSync(dataDir,{recursive:true});
   const tokenPath=resolve(dataDir,'ingest-token.txt');
   let token=providedToken;
@@ -19,8 +20,9 @@ export function createApp({dataDir=resolve(ROOT,'data'),distDir=resolve(ROOT,'di
     if(existsSync(tokenPath)) token=readFileSync(tokenPath,'utf8').trim();
     if(!token || !/^[a-f0-9]{64}$/.test(token)) { token=randomBytes(32).toString('hex');writeFileSync(tokenPath,token,{mode:0o600}); }
   }
-  const real=new InventoryStore(resolve(dataDir,'live.sqlite'),{now});
-  const demo=new InventoryStore(resolve(dataDir,'demo.sqlite'),{now,demo:true});
+  const registry=new ItemRegistry(localDataDir);
+  const real=new InventoryStore(resolve(dataDir,'live.sqlite'),{now,registry});
+  const demo=new InventoryStore(resolve(dataDir,'demo.sqlite'),{now,demo:true,registry});
   const clients=new Set();
   let activePort=port;
   const server=createServer(async(req,res)=> {
@@ -32,15 +34,21 @@ export function createApp({dataDir=resolve(ROOT,'data'),distDir=resolve(ROOT,'di
       if(demoFlag!==null && !['0','1'].includes(demoFlag)) throw new ApiError(400,'demo: ожидается 0 или 1.');
       const store=demoFlag==='1'?demo:real;
       const selection={worldId:url.searchParams.get('worldId')||undefined,zoneId:url.searchParams.get('zoneId')||'all'};
-      if(req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,service:'VALHEIM RESOURCE MANAGER',version:'0.1.0',localOnly:true});
+      if(req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,service:'VALHEIM RESOURCE MANAGER',version:'0.2.0',localOnly:true});
       if(req.method==='GET' && url.pathname==='/api/state') return json(res,200,store.state(selection));
+      if(req.method==='GET' && url.pathname==='/api/registry') {registry.reload();return json(res,200,registry.state());}
+      if(req.method==='POST' && url.pathname==='/api/registry') {authorizeSource(req);const summary=registry.publish(await body(req));notify(real);notify(demo);return json(res,200,{ok:true,summary});}
+      if(req.method==='PUT' && url.pathname==='/api/registry/overrides') {const item=registry.override(await body(req));notify(real);notify(demo);return json(res,200,{ok:true,item,summary:registry.summary()});}
+      const iconMatch=/^\/api\/icons\/([a-f0-9]{64})\.png$/.exec(url.pathname);
+      if(iconMatch && req.method==='POST') {authorizeSource(req);if(!/^image\/png(?:\s*;|$)/i.test(req.headers['content-type'] || ''))throw new ApiError(415,'Требуется Content-Type: image/png.','CONTENT_TYPE');const icon=registry.publishIcon(iconMatch[1],await bytes(req,512*1024));notify(real);notify(demo);return json(res,200,{ok:true,...icon});}
+      if(iconMatch && ['GET','HEAD'].includes(req.method)) {const file=registry.iconFile(iconMatch[1]);if(!file)throw new ApiError(404,'Пиктограмма не найдена.','ICON_NOT_FOUND');const stat=statSync(file);res.statusCode=200;res.setHeader('Content-Type','image/png');res.setHeader('Content-Length',stat.size);res.setHeader('Cache-Control','private, max-age=31536000, immutable');if(req.method==='HEAD')res.end();else createReadStream(file).on('error',()=>res.destroy()).pipe(res);return;}
       if(req.method==='POST' && ['/api/ingest','/api/snapshot'].includes(url.pathname)) {
-        const supplied=req.headers['x-vrm-token'];
-        if(typeof supplied!=='string' || Buffer.byteLength(supplied)!==Buffer.byteLength(token) || !timingSafeEqual(Buffer.from(supplied),Buffer.from(token))) throw new ApiError(401,'Неверный токен источника.','UNAUTHORIZED');
+        authorizeSource(req);
         const payload=validateIngest(await body(req));
         if(url.pathname==='/api/snapshot' && payload.mode!=='snapshot') throw new ApiError(400,'Snapshot endpoint requires snapshot mode.');
         const revision=real.ingest(payload);notify(real);
-        return json(res,200,{ok:true,revision,receivedAt:new Date(now()).toISOString()});
+        const reindexRequested=payload.containers.some(container=>container.items.some(item=>!registry.resolve(item.prefab)));
+        return json(res,200,{ok:true,revision,receivedAt:new Date(now()).toISOString(),reindexRequested});
       }
       if(req.method==='POST' && url.pathname==='/api/demo/start') { await body(req);const state=demo.startDemo();notify(demo);return json(res,200,state); }
       if(req.method==='POST' && url.pathname==='/api/demo/step') {
@@ -75,13 +83,14 @@ export function createApp({dataDir=resolve(ROOT,'data'),distDir=resolve(ROOT,'di
       }
       if(!existsSync(file)) throw new ApiError(503,'Панель ещё не собрана. Выполните npm run build.','BUILD_REQUIRED');
       const stat=statSync(file);res.statusCode=200;res.setHeader('Content-Type',mime[extname(file)]||'application/octet-stream');res.setHeader('Content-Length',stat.size);res.setHeader('Cache-Control',extname(file)==='.html'?'no-store':'public, max-age=3600');
-      if(req.method==='HEAD') res.end();else createReadStream(file).pipe(res);
+      if(req.method==='HEAD') res.end();else createReadStream(file).on('error',()=>res.destroy()).pipe(res);
     } catch(error) {
       if(!res.headersSent) json(res,error.status||500,{error:error.status?error.message:'Внутренняя ошибка сервера.',code:error.code||'INTERNAL_ERROR'});
       else res.destroy();
       if(!error.status) console.error(error);
     }
   });
+  function authorizeSource(req) {const supplied=req.headers['x-vrm-token'];if(typeof supplied!=='string' || Buffer.byteLength(supplied)!==Buffer.byteLength(token) || !timingSafeEqual(Buffer.from(supplied),Buffer.from(token)))throw new ApiError(401,'Неверный токен источника.','UNAUTHORIZED');}
   function secureRequest(req) {
     const host=req.headers.host;
     const allowedHosts=new Set([`127.0.0.1:${activePort}`,`localhost:${activePort}`]);
@@ -99,10 +108,10 @@ export function createApp({dataDir=resolve(ROOT,'data'),distDir=resolve(ROOT,'di
   });
   wss.on('connection',ws=> {clients.add(ws);ws.send(JSON.stringify({type:'state-changed',revision:real.revision,demo:false}));ws.send(JSON.stringify({type:'state-changed',revision:demo.revision,demo:true}));ws.on('close',()=>clients.delete(ws));ws.on('error',()=>clients.delete(ws));});
   function notify(store) { const message=JSON.stringify({type:'state-changed',revision:store.revision,demo:store.demo});for(const ws of clients) if(ws.readyState===WebSocket.OPEN) ws.send(message); }
-  const timer=intervals?setInterval(()=> {demo.tickDemo();notify(real);notify(demo);},3000):null;
+  const timer=intervals?setInterval(()=> {registry.reload();demo.tickDemo();notify(real);notify(demo);},3000):null;
   timer?.unref();
   return {
-    server,real,demo,tokenPath,
+    server,real,demo,registry,tokenPath,
     listen:()=>new Promise((resolveListen,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',()=>{server.removeListener('error',reject);activePort=server.address().port;resolveListen(activePort);});}),
     close:async()=> {if(timer)clearInterval(timer);for(const ws of clients)ws.terminate();wss.close();if(server.listening)await new Promise(done=>server.close(done));real.close();demo.close();}
   };
@@ -114,10 +123,14 @@ function setHeaders(res) {
 function json(res,status,value) {res.statusCode=status;res.setHeader('Content-Type','application/json; charset=utf-8');res.end(JSON.stringify(value));}
 async function body(req) {
   if(!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||'')) throw new ApiError(415,'Требуется Content-Type: application/json.','CONTENT_TYPE');
-  const length=Number(req.headers['content-length']);if(Number.isFinite(length) && length>MAX_BODY) throw new ApiError(413,'Пакет превышает 3 МиБ.','BODY_TOO_LARGE');
+  const raw=await bytes(req,MAX_BODY);
+  try{return JSON.parse(raw.toString('utf8'));}catch{throw new ApiError(400,'Некорректный JSON.','INVALID_JSON');}
+}
+async function bytes(req,max) {
+  const length=Number(req.headers['content-length']);if(Number.isFinite(length) && length>max) throw new ApiError(413,'Пакет превышает разрешённый размер.','BODY_TOO_LARGE');
   let size=0;const chunks=[];
-  for await (const chunk of req) {size+=chunk.length;if(size>MAX_BODY)throw new ApiError(413,'Пакет превышает 3 МиБ.','BODY_TOO_LARGE');chunks.push(chunk);}
-  try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw new ApiError(400,'Некорректный JSON.','INVALID_JSON');}
+  for await (const chunk of req) {size+=chunk.length;if(size>max)throw new ApiError(413,'Пакет превышает разрешённый размер.','BODY_TOO_LARGE');chunks.push(chunk);}
+  return Buffer.concat(chunks);
 }
 
 if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) {

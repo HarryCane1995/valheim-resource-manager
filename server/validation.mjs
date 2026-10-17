@@ -44,6 +44,11 @@ export function validateIngest(value) {
     for(const item of container.items) {
       object(item,'item'); string(item.prefab,'prefab',200); string(item.name,'item.name',240);
       if(item.category!==undefined) string(item.category,'item.category',100);
+      if(item.quality!==undefined)number(item.quality,'item.quality',{min:0,max:1_000_000,integer:true});
+      if(item.variant!==undefined)number(item.variant,'item.variant',{min:0,max:1_000_000,integer:true});
+      if(item.modId!==undefined)string(item.modId,'item.modId',200);
+      for(const key of ['customData','metadata'])if(item[key]!==undefined) {object(item[key],`item.${key}`);if(Buffer.byteLength(JSON.stringify(item[key]))>32768)fail(`item.${key}: слишком большой объект.`);}
+      if(item.variants!==undefined)fail('variants зарезервировано для агрегированного состояния. Передавайте отдельные стеки quality/variant.');
       number(item.quantity,'quantity',{min:0,max:1_000_000_000,integer:true});
       const total=(totals.get(item.prefab)||0)+item.quantity;
       if(total>1_000_000_000) fail('Суммарное количество предмета вне диапазона.');

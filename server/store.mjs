@@ -1,8 +1,11 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID,createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { RUSSIAN_ITEM_NAMES } from './catalog.mjs';
+import { categoryFor, ItemRegistry } from './registry.mjs';
+export { categoryFor } from './registry.mjs';
 
 export const HEARTBEAT_TIMEOUT_MS = 12_000;
 export const LIVE_OBSERVATION_MS = 15_000;
@@ -12,35 +15,26 @@ export class ApiError extends Error {
 const iso = value => new Date(value).toISOString();
 const statusRank = { LIVE: 0, SNAPSHOT: 1, STALE: 2, OFFLINE: 3 };
 
-export function categoryFor(prefab) {
-  const p = prefab.toLowerCase();
-  if (/^(wood|finewood|roundlog|yggdrasilwood|blackwood|ancientbark)$/.test(p)) return 'Древесина';
-  if (/(ore$|scrapiron|copper|bronze|iron|silver|tin$|blackmetal|flametal)/.test(p) && !/(sword|axe|armor|helmet|mace|spear|pickaxe|arrow|shield)/.test(p)) return 'Металлы и руда';
-  if (/(stone|coal|marble|tar$|resin|greydwarfeye|flint|crystal|chitin)/.test(p)) return 'Камень и строительство';
-  if (/(seed|sapling|thistle|dandelion|vineberryseeds)/.test(p)) return 'Растения и семена';
-  if (/trophy/.test(p)) return 'Трофеи';
-  if (/(coins|ruby|amber|necklace|pearl)/.test(p)) return 'Ценности';
-  if (/(sword|axe|armor|helmet|mace|spear|bow|arrow|shield|knife|cape|belt|hammer|hoe|pickaxe|fishingrod)/.test(p)) return 'Оружие и снаряжение';
-  if (/(meat|fish|berry|berries|mushroom|honey|carrot|turnip|onion|barley|flour|bread|stew|soup|sausage|blood|egg|cloudberry|raspberry|blueberry|serpent|loxpie|pudding|mead|sap$|pukeberries)/.test(p)) return 'Еда и ингредиенты';
-  return 'Прочее';
-}
-
-export function normalizedItems(items) {
+export function normalizedItems(items,registry) {
   const byPrefab = new Map();
-  for (const item of items) {
+  for (const original of items) {
+    const item=registry?registry.describe(original):original;
     if (item.quantity === 0) continue;
     const existing = byPrefab.get(item.prefab);
-    if (existing) existing.quantity += item.quantity;
-    else byPrefab.set(item.prefab, { prefab: item.prefab, name: RUSSIAN_ITEM_NAMES[item.prefab] || item.name, category: item.category || categoryFor(item.prefab), quantity: item.quantity });
+    const variants=original.variants || [{quantity:original.quantity,...Object.fromEntries(['quality','variant','modId','customData','metadata'].filter(key=>original[key]!==undefined).map(key=>[key,original[key]]))}];
+    if (existing) {existing.quantity+=item.quantity;existing.variants.push(...variants);if(registry) {existing.sourceIds=[...new Set([...existing.sourceIds,...item.sourceIds])];existing.searchText=[existing.searchText,...existing.sourceIds].join(' ').toLowerCase();}}
+    else byPrefab.set(item.prefab,{...item,name:registry?item.name:RUSSIAN_ITEM_NAMES[item.prefab] || item.name,category:item.category || categoryFor(item.prefab),variants:[...variants]});
   }
+  for(const item of byPrefab.values()) {const variants=new Map();for(const entry of item.variants) {const {quantity,...identity}=entry,key=JSON.stringify(identity);const existing=variants.get(key);if(existing)existing.quantity+=quantity;else variants.set(key,{...identity,quantity});}item.variants=[...variants.values()];}
   return [...byPrefab.values()].sort((a, b) => a.prefab.localeCompare(b.prefab));
 }
 
 export class InventoryStore {
-  constructor(filename, { now = () => Date.now(), demo = false } = {}) {
+  constructor(filename, { now = () => Date.now(), demo = false, registry } = {}) {
     if (filename !== ':memory:') mkdirSync(dirname(filename), { recursive: true });
     this.now = now;
     this.demo = demo;
+    this.registry=registry || new ItemRegistry(filename===':memory:'?join(tmpdir(),'vrm-empty-registry-'+randomUUID()):dirname(filename)+'/localdata');
     this.db = new DatabaseSync(filename);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -126,10 +120,11 @@ export class InventoryStore {
     });
   }
   state({worldId, zoneId = 'all'} = {}) {
+    this.registry.reload();
     const worlds = this.db.prepare('SELECT id,name FROM worlds ORDER BY rowid').all();
     const selected = worldId ? worlds.find(world=>world.id===worldId) : worlds[0];
     if (worldId && !selected) throw new ApiError(404, 'Мир не найден.', 'WORLD_NOT_FOUND');
-    const empty = { demo:this.demo,worlds,world:selected || null,source:{connected:false,mode:null,coverage:'partial',scope:'UNKNOWN',lastSeenAt:null,lastConfirmedAt:null,gameVersion:null},containers:[],resources:[],zones:[],minimums:{},events:[],stats:{totalItems:0,uniqueItems:0,containers:0,shortages:0},revision:this.revision };
+    const empty = { demo:this.demo,worlds,world:selected || null,registry:{...this.registry.summary(),inventoryUnknownItems:0,reindexRequested:false},reservationsImplemented:false,source:{connected:false,mode:null,coverage:'partial',scope:'UNKNOWN',lastSeenAt:null,lastConfirmedAt:null,gameVersion:null},containers:[],resources:[],zones:[],minimums:{},events:[],stats:{totalItems:0,uniqueItems:0,containers:0,shortages:0},revision:this.revision };
     if (!selected) return empty;
     const now = this.now();
     const rawSources = this.db.prepare('SELECT * FROM sources WHERE world_id=? ORDER BY last_seen DESC').all(selected.id);
@@ -142,20 +137,24 @@ export class InventoryStore {
     let containers = this.db.prepare('SELECT * FROM containers WHERE world_id=? AND destroyed=0 ORDER BY rowid').all(selected.id).map(container=> {
       const source = sourceById.get(container.source_id);
       const status = source?.mode==='snapshot' ? 'SNAPSHOT' : !connected(source) ? 'OFFLINE' : container.session_id!==source.session_id || now-container.observed_at>LIVE_OBSERVATION_MS ? 'STALE' : 'LIVE';
-      return {id:container.id,zdoId:source?.mode==='snapshot'?null:container.runtime_id,identityKey:container.identity_key || null,type:container.type,name:container.name,label:container.label,x:container.x,y:container.y,z:container.z,items:normalizedItems(JSON.parse(container.items)),observedAt:iso(container.observed_at),status,zoneIds:zones.filter(zone=>zone.enabled && Math.hypot(container.x-zone.x,container.z-zone.z)<=zone.radius).map(zone=>zone.id)};
+      return {id:container.id,zdoId:source?.mode==='snapshot'?null:container.runtime_id,identityKey:container.identity_key || null,type:container.type,name:container.name,label:container.label,x:container.x,y:container.y,z:container.z,items:normalizedItems(JSON.parse(container.items),this.registry),observedAt:iso(container.observed_at),status,zoneIds:zones.filter(zone=>zone.enabled && Math.hypot(container.x-zone.x,container.z-zone.z)<=zone.radius).map(zone=>zone.id)};
     });
     if (zoneId !== 'all') containers = containers.filter(container=>container.zoneIds.includes(zoneId));
-    const minimums = Object.fromEntries(this.db.prepare('SELECT prefab,minimum FROM minimums WHERE world_id=?').all(selected.id).map(row=>[row.prefab,row.minimum]));
+    const minimums=Object.create(null);for(const row of this.db.prepare('SELECT prefab,minimum FROM minimums WHERE world_id=?').all(selected.id)) {const prefab=this.registry.resolve(row.prefab)?.prefab || row.prefab;minimums[prefab]=Math.max(minimums[prefab] || 0,row.minimum);}
     const byPrefab = new Map();
     for (const container of containers) for (const item of container.items) {
       let resource = byPrefab.get(item.prefab);
-      if (!resource) { resource = {...item,quantity:0,containerIds:[],minimum:minimums[item.prefab]||0,status:container.status}; byPrefab.set(item.prefab,resource); }
+      if (!resource) { resource = {...item,variants:[],quantity:0,containerIds:[],minimum:minimums[item.prefab]||0,status:container.status}; byPrefab.set(item.prefab,resource); }
       resource.quantity += item.quantity;
+      resource.variants.push(...item.variants);
+      resource.sourceIds=[...new Set([...resource.sourceIds,...item.sourceIds])];
       resource.containerIds.push(container.id);
       if (statusRank[container.status]>statusRank[resource.status]) resource.status = container.status;
     }
-    for (const [prefab,minimum] of Object.entries(minimums)) if (!byPrefab.has(prefab) && minimum>0) byPrefab.set(prefab,{prefab,name:RUSSIAN_ITEM_NAMES[prefab] || prefab,category:categoryFor(prefab),quantity:0,containerIds:[],minimum,status:preferred && connected(preferred) ? 'STALE' : 'OFFLINE'});
-    const resources = [...byPrefab.values()].sort((a,b)=>b.quantity-a.quantity || a.name.localeCompare(b.name,'ru'));
+    for (const [prefab,minimum] of Object.entries(minimums)) if (!byPrefab.has(prefab) && minimum>0) byPrefab.set(prefab,{...this.registry.describe({prefab,name:RUSSIAN_ITEM_NAMES[prefab] || prefab}),quantity:0,variants:[],containerIds:[],minimum,status:preferred && connected(preferred) ? 'STALE' : 'OFFLINE'});
+    const resources = [...byPrefab.values()].map(resource=>({...resource,searchText:[resource.searchText,...resource.sourceIds].join(' ').toLowerCase(),availableQuantity:resource.quantity,reservedQuantity:0,reservationsImplemented:false})).sort((a,b)=>b.quantity-a.quantity || a.name.localeCompare(b.name,'ru'));
+    empty.registry.inventoryUnknownItems=resources.filter(resource=>!resource.registryKnown).length;
+    empty.registry.reindexRequested=empty.registry.inventoryUnknownItems>0;
     const lastConfirmed=this.db.prepare('SELECT MAX(observed_at) AS confirmed FROM containers WHERE world_id=? AND destroyed=0').get(selected.id).confirmed;
     return {...empty,source:preferred ? {connected:connected(preferred),mode:preferred.mode,coverage:preferred.coverage,scope:preferred.coverage==='authoritative' ? 'authoritative' : 'partial',lastSeenAt:iso(preferred.last_seen),lastConfirmedAt:lastConfirmed===null?null:iso(lastConfirmed),gameVersion:preferred.game_version} : empty.source,containers,resources,zones,minimums,events:this.db.prepare('SELECT id,at,text FROM events WHERE world_id=? ORDER BY id DESC LIMIT 60').all(selected.id).map(event=>({...event,at:iso(event.at)})),stats:{totalItems:resources.reduce((sum,resource)=>sum+resource.quantity,0),uniqueItems:resources.filter(resource=>resource.quantity>0).length,containers:containers.length,shortages:resources.filter(resource=>resource.quantity<resource.minimum).length}};
   }
@@ -169,8 +168,13 @@ export class InventoryStore {
   }
   minimum(worldId,prefab,minimum) {
     this.requireWorld(worldId);
-    this.db.prepare('INSERT INTO minimums VALUES(?,?,?) ON CONFLICT(world_id,prefab) DO UPDATE SET minimum=excluded.minimum').run(worldId,prefab,minimum);
-    this.bump(); return this.state({worldId});
+    this.registry.reload();
+    const canonical=this.registry.resolve(prefab)?.prefab || prefab;
+    this.transact(()=> {
+      for(const row of this.db.prepare('SELECT prefab FROM minimums WHERE world_id=?').all(worldId))if((this.registry.resolve(row.prefab)?.prefab || row.prefab)===canonical)this.db.prepare('DELETE FROM minimums WHERE world_id=? AND prefab=?').run(worldId,row.prefab);
+      this.db.prepare('INSERT INTO minimums VALUES(?,?,?)').run(worldId,canonical,minimum);this.bump();
+    });
+    return this.state({worldId});
   }
   zone(worldId,zone,id) {
     this.requireWorld(worldId);

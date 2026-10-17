@@ -1,6 +1,9 @@
-export type Item = {prefab:string;name:string;category:string;quantity:number};
+export type ItemVariant = {quality?:number;variant?:number;modId?:string;metadata?:Record<string,unknown>;quantity:number};
+export type Item = {id?:string;prefab:string;prefabHash?:number;name:string;nameRu?:string|null;nameEn?:string|null;category:string;subcategory?:string|null;quantity:number;maxStack?:number|null;iconUrl?:string|null;diagnostics?:string[];source?:string|Record<string,unknown>;sourceIds?:string[];searchText?:string;quality?:number;variant?:number;variants?:ItemVariant[]};
 export type Container = {id:string;zdoId?:string|null;type:string;name:string;label:string;x:number;y:number;z:number;items:Item[];observedAt:string;status:string;zoneIds:string[]};
-export type Resource = Item & {containerIds:string[];minimum:number;status:string};
+export type Resource = Item & {containerIds:string[];minimum:number;status:string;availableQuantity?:number|null;reservedQuantity?:number|null;reservationsImplemented?:boolean};
+export type RegistrySummary = Record<string,unknown>;
+export type RegistryItem = Omit<Item,'quantity'> & {quantity?:number;metadata?:Record<string,unknown>};
 export type Zone = {id:string;name:string;x:number;z:number;radius:number;enabled:boolean;proposed?:boolean};
-export type State = {worlds:{id:string;name:string}[];world:{id:string;name:string}|null;source:{connected:boolean;mode:string;coverage:string;lastSeenAt:string|null;lastConfirmedAt?:string|null;gameVersion:string|null};containers:Container[];resources:Resource[];zones:Zone[];minimums:Record<string,number>;events:{id:string;at:string;text:string}[];stats:{totalItems:number;uniqueItems:number;containers:number;shortages:number};revision:number};
+export type State = {worlds:{id:string;name:string}[];world:{id:string;name:string}|null;source:{connected:boolean;mode:string;coverage:string;lastSeenAt:string|null;lastConfirmedAt?:string|null;gameVersion:string|null};containers:Container[];resources:Resource[];zones:Zone[];minimums:Record<string,number>;events:{id:string;at:string;text:string}[];stats:{totalItems:number;uniqueItems:number;containers:number;shortages:number};revision:number;registry?:RegistrySummary};
 export const emptyState:State={worlds:[],world:null,source:{connected:false,mode:'OFFLINE',coverage:'',lastSeenAt:null,gameVersion:null},containers:[],resources:[],zones:[],minimums:{},events:[],stats:{totalItems:0,uniqueItems:0,containers:0,shortages:0},revision:0};
