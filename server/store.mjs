@@ -49,6 +49,9 @@ export class InventoryStore {
       CREATE TABLE IF NOT EXISTS minimums (world_id TEXT NOT NULL,prefab TEXT NOT NULL,minimum INTEGER NOT NULL, PRIMARY KEY(world_id,prefab));
       CREATE TABLE IF NOT EXISTS world_preferences (world_id TEXT PRIMARY KEY,default_minimum INTEGER NOT NULL CHECK(default_minimum>=0 AND default_minimum<=1000000000));
       CREATE TABLE IF NOT EXISTS observed_items (world_id TEXT NOT NULL,prefab TEXT NOT NULL,name TEXT NOT NULL, PRIMARY KEY(world_id,prefab));
+      CREATE TABLE IF NOT EXISTS resource_favorites (world_id TEXT NOT NULL,prefab TEXT NOT NULL, PRIMARY KEY(world_id,prefab));
+      CREATE TABLE IF NOT EXISTS resource_lists (world_id TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL,created_at INTEGER NOT NULL, PRIMARY KEY(world_id,id));
+      CREATE TABLE IF NOT EXISTS resource_list_items (world_id TEXT NOT NULL,list_id TEXT NOT NULL,prefab TEXT NOT NULL, PRIMARY KEY(world_id,list_id,prefab), FOREIGN KEY(world_id,list_id) REFERENCES resource_lists(world_id,id) ON DELETE CASCADE);
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT,world_id TEXT NOT NULL,at INTEGER NOT NULL,text TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS host_beds (world_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,session_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('set','unset')),x REAL,y REAL,z REAL,observed_at INTEGER NOT NULL);
     `);
@@ -79,6 +82,66 @@ export class InventoryStore {
   observedPrefabs(worldId) {
     if(!worldId) return new Set();
     return new Set(this.db.prepare('SELECT prefab FROM observed_items WHERE world_id=?').all(worldId).map(item=>this.registry.resolve(item.prefab)?.prefab || item.prefab));
+  }
+  collectionPrefab(prefab) {
+    if(typeof prefab!=='string' || !prefab.trim() || prefab.length>200 || /[\u0000-\u001f]/.test(prefab)) throw new ApiError(400,'Недопустимый prefab.');
+    return this.registry.resolve(prefab)?.prefab || prefab;
+  }
+  collections(worldId) {
+    if(!worldId) return {favorites:[],lists:[]};
+    const canonical=rows=>[...new Set(rows.map(row=>this.collectionPrefab(row.prefab)))];
+    const members=new Map();
+    for(const row of this.db.prepare('SELECT list_id,prefab FROM resource_list_items WHERE world_id=? ORDER BY rowid').all(worldId)) {
+      if(!members.has(row.list_id)) members.set(row.list_id,[]);
+      members.get(row.list_id).push(row);
+    }
+    return {favorites:canonical(this.db.prepare('SELECT prefab FROM resource_favorites WHERE world_id=? ORDER BY rowid').all(worldId)),lists:this.db.prepare('SELECT id,name FROM resource_lists WHERE world_id=? ORDER BY created_at,rowid').all(worldId).map(list=>({...list,prefabs:canonical(members.get(list.id)||[])}))};
+  }
+  listName(worldId,name,exceptId) {
+    if(typeof name!=='string' || !name.trim() || name.trim().length>80 || /[\u0000-\u001f]/.test(name)) throw new ApiError(400,'Название списка: от 1 до 80 символов без переносов строк.');
+    const trimmed=name.trim();
+    if(this.collections(worldId).lists.some(list=>list.id!==exceptId && list.name.toLocaleLowerCase('ru')===trimmed.toLocaleLowerCase('ru'))) throw new ApiError(409,'Список с таким названием уже есть.','LIST_EXISTS');
+    return trimmed;
+  }
+  requireList(worldId,id) {
+    this.requireWorld(worldId);
+    const list=this.db.prepare('SELECT id,name FROM resource_lists WHERE world_id=? AND id=?').get(worldId,id);
+    if(!list) throw new ApiError(404,'Список не найден в выбранном мире.','LIST_NOT_FOUND');
+    return list;
+  }
+  // Canonicalize aliases on a write; reads never migrate inventory or mark items as observed.
+  setCollectionMembership(worldId,prefab,included,listId) {
+    if(listId===undefined) this.requireWorld(worldId); else this.requireList(worldId,listId);
+    if(typeof included!=='boolean') throw new ApiError(400,'Состояние отметки должно быть true или false.');
+    this.registry.reload();const canonical=this.collectionPrefab(prefab);
+    return this.transact(()=>{
+      const where=listId===undefined?'world_id=?':'world_id=? AND list_id=?',values=listId===undefined?[worldId]:[worldId,listId],table=listId===undefined?'resource_favorites':'resource_list_items';
+      const rows=this.db.prepare(`SELECT prefab FROM ${table} WHERE ${where}`).all(...values),aliases=rows.filter(row=>this.collectionPrefab(row.prefab)===canonical);
+      if((!included&&!aliases.length)||(included&&aliases.length===1&&aliases[0].prefab===canonical)) return this.collections(worldId);
+      if(included&&!aliases.length&&rows.length>=20_000) throw new ApiError(400,'В одном списке может быть не более 20 000 предметов.');
+      for(const row of aliases) this.db.prepare(`DELETE FROM ${table} WHERE ${where} AND prefab=?`).run(...values,row.prefab);
+      if(included) this.db.prepare(`INSERT INTO ${table} (${listId===undefined?'world_id,prefab':'world_id,list_id,prefab'}) VALUES(${values.map(()=>'?').join(',')},?)`).run(...values,canonical);
+      this.bump();return this.collections(worldId);
+    });
+  }
+  createResourceList(worldId,name,prefab) {
+    this.requireWorld(worldId);this.registry.reload();
+    const trimmed=this.listName(worldId,name),canonical=prefab===undefined?undefined:this.collectionPrefab(prefab);
+    if(this.collections(worldId).lists.length>=100) throw new ApiError(400,'В одном мире может быть не более 100 списков.');
+    return this.transact(()=>{
+      const id=randomUUID();this.db.prepare('INSERT INTO resource_lists(world_id,id,name,created_at) VALUES(?,?,?,?)').run(worldId,id,trimmed,this.now());
+      if(canonical!==undefined) this.db.prepare('INSERT INTO resource_list_items(world_id,list_id,prefab) VALUES(?,?,?)').run(worldId,id,canonical);
+      this.bump();return {id,name:trimmed,prefabs:canonical===undefined?[]:[canonical]};
+    });
+  }
+  renameResourceList(worldId,id,name) {
+    const list=this.requireList(worldId,id),trimmed=this.listName(worldId,name,id);
+    if(list.name!==trimmed) this.transact(()=>{this.db.prepare('UPDATE resource_lists SET name=? WHERE world_id=? AND id=?').run(trimmed,worldId,id);this.bump();});
+    return this.collections(worldId);
+  }
+  deleteResourceList(worldId,id) {
+    this.requireList(worldId,id);
+    return this.transact(()=>{this.db.prepare('DELETE FROM resource_lists WHERE world_id=? AND id=?').run(worldId,id);this.bump();return this.collections(worldId);});
   }
   ingest(payload) {
     const now = this.now();
@@ -141,7 +204,7 @@ export class InventoryStore {
     const worlds = this.db.prepare('SELECT id,name FROM worlds ORDER BY rowid').all();
     const selected = worldId ? worlds.find(world=>world.id===worldId) : worlds[0];
     if (worldId && !selected) throw new ApiError(404, 'Мир не найден.', 'WORLD_NOT_FOUND');
-    const empty = { demo:this.demo,worlds,world:selected || null,defaultMinimum:selected ? this.db.prepare('SELECT default_minimum FROM world_preferences WHERE world_id=?').get(selected.id)?.default_minimum ?? 0 : 0,hostBedArea:hostBedArea(selected && this.db.prepare('SELECT * FROM host_beds WHERE world_id=?').get(selected.id)),registry:{...this.registry.summary(),inventoryUnknownItems:0,reindexRequested:false},clusters:this.registry.clusters,clusterStats:summarizeClusters([],this.registry.clusters),reservationsImplemented:false,source:{connected:false,mode:null,coverage:'partial',scope:'UNKNOWN',lastSeenAt:null,lastConfirmedAt:null,gameVersion:null},containers:[],resources:[],zones:[],minimums:{},events:[],stats:{totalItems:0,uniqueItems:0,containers:0,shortages:0},revision:this.revision };
+    const empty = { demo:this.demo,worlds,world:selected || null,collections:this.collections(selected?.id),defaultMinimum:selected ? this.db.prepare('SELECT default_minimum FROM world_preferences WHERE world_id=?').get(selected.id)?.default_minimum ?? 0 : 0,hostBedArea:hostBedArea(selected && this.db.prepare('SELECT * FROM host_beds WHERE world_id=?').get(selected.id)),registry:{...this.registry.summary(),inventoryUnknownItems:0,reindexRequested:false},clusters:this.registry.clusters,clusterStats:summarizeClusters([],this.registry.clusters),reservationsImplemented:false,source:{connected:false,mode:null,coverage:'partial',scope:'UNKNOWN',lastSeenAt:null,lastConfirmedAt:null,gameVersion:null},containers:[],resources:[],zones:[],minimums:{},events:[],stats:{totalItems:0,uniqueItems:0,containers:0,shortages:0},revision:this.revision };
     if (!selected) return empty;
     const now = this.now();
     const rawSources = this.db.prepare('SELECT * FROM sources WHERE world_id=? ORDER BY last_seen DESC').all(selected.id);
@@ -185,6 +248,12 @@ export class InventoryStore {
     const lastConfirmed=containers.reduce((latest,container)=>latest===null?Date.parse(container.observedAt):Math.max(latest,Date.parse(container.observedAt)),null);
     return {...empty,clusterStats:summarizeClusters(resources,this.registry.clusters),source:preferred ? {connected:connected(preferred),mode:preferred.mode,coverage:preferred.coverage,scope:preferred.coverage==='authoritative' ? 'authoritative' : 'partial',lastSeenAt:iso(preferred.last_seen),lastConfirmedAt:lastConfirmed===null?null:iso(lastConfirmed),gameVersion:preferred.game_version} : empty.source,containers,resources,zones,minimums,events:this.db.prepare('SELECT id,at,text FROM events WHERE world_id=? ORDER BY id DESC LIMIT 60').all(selected.id).map(event=>({...event,at:iso(event.at)})),stats:{totalItems:resources.reduce((sum,resource)=>sum+resource.quantity,0),uniqueItems:resources.filter(resource=>resource.quantity>0).length,containers:containers.length,shortages:resources.filter(resource=>resource.quantity<resource.minimum).length}};
   }
+  collectionsView(selection) {
+    const state=this.state(selection),current=new Map(state.resources.map(item=>[item.prefab,item])),seen=this.observedPrefabs(state.world?.id);
+    const prefabs=new Set([...state.collections.favorites,...state.collections.lists.flatMap(list=>list.prefabs)]);
+    const items=[...prefabs].map(prefab=>current.get(prefab)||({...this.registry.describe({prefab,name:prefab}),catalogOnly:true,newToWorld:Boolean(state.world&&!seen.has(prefab)),quantity:0,minimum:0,containerIds:[],variants:[],availableQuantity:null,reservedQuantity:null,reservationsImplemented:false,status:'CATALOG'}));
+    return {...state,collections:{...state.collections,items}};
+  }
   label(worldId,id,label) {
     this.requireWorld(worldId);
     const result = this.db.prepare('UPDATE containers SET label=? WHERE world_id=? AND id=?').run(label,worldId,id);
@@ -227,7 +296,7 @@ export class InventoryStore {
   }
   startDemo() {
     if (!this.demo) throw new Error('Demo is isolated from real inventory.');
-    this.db.exec('DELETE FROM worlds; DELETE FROM sources; DELETE FROM sessions; DELETE FROM containers; DELETE FROM zones; DELETE FROM minimums; DELETE FROM world_preferences; DELETE FROM observed_items; DELETE FROM events; DELETE FROM host_beds;');
+    this.db.exec('DELETE FROM resource_list_items; DELETE FROM resource_lists; DELETE FROM resource_favorites; DELETE FROM worlds; DELETE FROM sources; DELETE FROM sessions; DELETE FROM containers; DELETE FROM zones; DELETE FROM minimums; DELETE FROM world_preferences; DELETE FROM observed_items; DELETE FROM events; DELETE FROM host_beds;');
     this.ingest({sourceId:'demo-fixture',worldId:'demo-midgard',worldName:'Мидгард · ДЕМО',mode:'client',coverage:'partial',sessionId:randomUUID(),sequence:0,gameVersion:'DEMO — синтетические данные',containers:[
       {id:'demo:main-chest',type:'piece_chest',name:'Деревянный сундук',x:120,y:12,z:-48,observedAt:this.now(),items:[{prefab:'Wood',name:'Древесина',quantity:160},{prefab:'Stone',name:'Камень',quantity:285},{prefab:'Resin',name:'Смола',quantity:36}]},
       {id:'demo:forge-chest',type:'piece_chest_private',name:'Укреплённый сундук',x:136,y:12,z:-42,observedAt:this.now(),items:[{prefab:'Wood',name:'Древесина',quantity:80},{prefab:'Iron',name:'Железо',quantity:42},{prefab:'Copper',name:'Медь',quantity:68},{prefab:'Coal',name:'Уголь',quantity:110}]},

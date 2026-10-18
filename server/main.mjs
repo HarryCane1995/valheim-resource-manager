@@ -38,6 +38,25 @@ export function createApp({dataDir=resolve(ROOT,'data'),localDataDir=dataDir===r
       const selection={worldId:url.searchParams.get('worldId')||undefined,zoneId:url.searchParams.get('zoneId')||'all'};
       if(req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,service:'VALHEIM RESOURCE MANAGER',version:'0.3.0',localOnly:true});
       if(req.method==='GET' && url.pathname==='/api/state') return json(res,200,store.state(selection));
+      if(req.method==='GET' && url.pathname==='/api/collections') return json(res,200,store.collectionsView(selection));
+      if(req.method==='PUT' && url.pathname==='/api/favorites') {
+        const value=await body(req),worldId=worldBody(value);
+        const collections=store.setCollectionMembership(worldId,value.prefab,value.favorite);notify(store);return json(res,200,{ok:true,collections});
+      }
+      if(req.method==='POST' && url.pathname==='/api/resource-lists') {
+        const value=await body(req),worldId=worldBody(value);
+        const list=store.createResourceList(worldId,value.name,value.prefab);notify(store);return json(res,201,{ok:true,list});
+      }
+      const listMatch=/^\/api\/resource-lists\/([^/]+)(\/items)?$/.exec(url.pathname);
+      if(listMatch && ['PUT','DELETE'].includes(req.method)) {
+        const value=await body(req),worldId=worldBody(value),id=decodeURIComponent(listMatch[1]);
+        let collections;
+        if(req.method==='PUT' && listMatch[2]) collections=store.setCollectionMembership(worldId,value.prefab,value.included,id);
+        else if(req.method==='PUT') collections=store.renameResourceList(worldId,id,value.name);
+        else if(!listMatch[2]) collections=store.deleteResourceList(worldId,id);
+        else throw new ApiError(404,'API-метод не найден.','NOT_FOUND');
+        notify(store);return json(res,200,{ok:true,collections});
+      }
       if(req.method==='GET' && url.pathname==='/api/chestsorter') {
         const state=store.state(selection);
         return json(res,200,chestSorter.view(state,{registry,observedPrefabs:store.observedPrefabs(state.world?.id)}));

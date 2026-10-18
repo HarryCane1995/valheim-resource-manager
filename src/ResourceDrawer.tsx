@@ -4,6 +4,7 @@ import { Check, Clock3, Layers3, MapPin, RotateCcw, Search, ShieldCheck, Sliders
 import { itemKey, sameItem } from './catalog';
 import { ResourceIcon } from './ResourceIcon';
 import { StockGauge } from './StockGauge';
+import { ResourceCollectionControls } from './ResourceLists';
 import { uiStatus } from './CompactCatalog';
 import { Container, Resource, State } from './types';
 
@@ -29,6 +30,7 @@ export function ResourceDrawer({resource:r,state,onClose,mutate,busy}:{resource:
  return <div className="drawer-overlay" onClick={onClose}><aside ref={drawerRef} className="resource-drawer" role="dialog" aria-label={`Ресурс: ${r.name}`} data-testid="resource-drawer" onClick={e=>e.stopPropagation()}>
   <div className="drawer-top"><span>РЕСУРС · МЕСТА ХРАНЕНИЯ</span><button className="icon-button" onClick={onClose} aria-label="Закрыть карточку"><X size={20}/></button></div>
   <div className="drawer-resource-head"><span className="drawer-art"><ResourceIcon prefab={r.prefab} name={r.name} iconUrl={r.iconUrl} category={r.category} large/></span><div><span className="resource-category">{r.clusterName||r.category}{(r.clusterCategory||r.subcategory)?` / ${r.clusterCategory||r.subcategory}`:''}</span><h2 className={r.newToWorld?'drawer-new-item':undefined}>{r.name}</h2>{r.nameEn&&r.nameEn!==r.name&&<p className="drawer-english">{r.nameEn}</p>}{r.catalogOnly?<span className={`chestsorter-catalog-badge drawer-catalog-badge${r.newToWorld?' is-new':''}`}>{r.newToWorld?'НОВЫЙ ДЛЯ УЧЁТА':'КАТАЛОГ'}</span>:<Status status={r.status}/>}</div></div>
+  <ResourceCollectionControls key={JSON.stringify([state.world?.id,r.prefab])} resource={r} state={state} mutate={mutate} busy={busy}/>
   <dl className="drawer-item-metadata"><div><dt>ID</dt><dd title={itemKey(r)}>{itemKey(r)}</dd></div><div><dt>Prefab</dt><dd>{r.prefab}</dd></div><div><dt>Стопка</dt><dd>{r.maxStack??'Не подтверждена'}</dd></div>{r.quality!==undefined&&<div><dt>Качество</dt><dd>{r.quality}</dd></div>}{r.variant!==undefined&&<div><dt>Вариант</dt><dd>{r.variant}</dd></div>}</dl>
   {!!r.diagnostics?.length&&<div className="item-diagnostics" aria-label="Диагностика предмета">{r.diagnostics.map(diagnostic=><span key={diagnostic}>{diagnostic}</span>)}</div>}
   {!!r.variants?.length&&<details className="drawer-variants" data-dismiss-on-outside><summary>Качество и варианты · {r.variants.length}</summary><div>{r.variants.map((variant,index)=><p key={`${variant.quality??'?'}:${variant.variant??'?'}:${variant.modId??''}:${index}`}><span>{variant.quality===undefined?'Качество не передано':`Качество ${variant.quality}`}{variant.variant!==undefined?` · вариант ${variant.variant}`:''}{variant.modId?` · мод ${variant.modId}`:''}</span><strong>{fmt(variant.quantity)}</strong></p>)}</div></details>}
